@@ -64,3 +64,26 @@ These were either checked by hand once or not checked at all.
 - **Production mode has no migrations.** `synchronize` is off when `NODE_ENV=production`, so a fresh database has no tables and the service fails at startup (observed by hand: `no such table: payments`). Production is not runnable as-is.
 - **A browser rendering `/docs`.** Swagger UI assets and the CSP were checked with curl only, not in a browser.
 - **True interleaving at the database.** better-sqlite3 is synchronous, so the concurrency tests (same-key race, two processors) cannot interleave inside a single statement; the race branches are covered by mocked tests instead.
+
+## Frontend
+
+Test paths are relative to `frontend/`.
+
+| Failure point | What happens | How it is handled | Test that proves it |
+| --- | --- | --- | --- |
+| Non-JSON error body (e.g. a proxy 502 HTML page, empty body) | `res.json()` would throw and hide the real failure | The client reads text, parses defensively, and `toApiError` falls back to a generic message per status | `src/lib/api/api-error.test.ts` › "falls back to a generic message for a non-JSON body (status %i)"; `src/lib/api/api-error.test.ts` › "maps a proxy HTML error page to a generic ApiError" |
+| Network failure (backend down, DNS, CORS block) | `fetch` rejects with no status | Becomes `ApiError` with status 0 and "Cannot reach the API" | `src/lib/api/api-error.test.ts` › "turns a rejected fetch into ApiError status 0" |
+| Malformed error JSON (message not a string, bad `details` entries, array or primitive body) | Mapping code could throw or show garbage | `toApiError` never throws: bad message falls back, bad detail entries are skipped | `src/lib/api/api-error.test.ts` › "falls back when message is not a string"; "skips malformed detail entries and ignores a non-string requestId"; "never throws on arrays or primitives" |
+| Several validation messages for one field, or `details` as an object | Only one message would show, or the conflict info would be lost | Messages are joined per field; object details are kept raw with empty `fieldErrors` | `src/lib/api/api-error.test.ts` › "joins several messages for the same field"; "keeps an object details as-is with no field errors" |
+| Create retried or repeated | Could replay or duplicate a payment | A fresh `Idempotency-Key` per create call; mutation retries are off | `src/lib/api/api-error.test.ts` › "sends a fresh UUID Idempotency-Key per create" |
+| API key sent where it is not needed | Key exposed needlessly | `/health` is called without the key | `src/lib/api/api-error.test.ts` › "does not send the API key to /health" |
+| Rate-limit pressure from polling (backend: 300 req/min per IP) | Own polling could trigger 429s | Health polls every 5s; live queries pause in background tabs; 4xx are never retried | Untested (configuration only, no automated test) |
+
+## Frontend: not covered by automated tests
+
+- **401 from a bad key shows "Unauthorized".** The `ApiError` 401 mapping and key header are tested, but the `ConnectionIndicator` component itself is not rendered in any test. Checked by reading the code only.
+- **`sessionStorage` unavailable.** `getSettings` and `saveSettings` wrap access in try/catch and fall back to memory. Not tested.
+- **Polling and rate limit.** The 5s health interval and paused background polling are untested; no load test against the backend limiter.
+- **Dialog behaviour** (focus trap, Escape, focus restore) and the toast live region are untested.
+- **API key in `sessionStorage` is readable by any XSS.** Accepted risk for a demo; the key is never put in a URL or logged.
+

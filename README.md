@@ -1,6 +1,6 @@
 # Payment Processing Simulation
 
-A Node.js microservice that simulates payment processing. Clients create payments through a REST API; a background worker charges them through a simulated, deliberately flaky gateway, with retries, idempotency and safe concurrent updates. A React frontend is planned.
+A Node.js microservice that simulates payment processing. Clients create payments through a REST API; a background worker charges them through a simulated, deliberately flaky gateway, with retries, idempotency and safe concurrent updates. A React frontend (`frontend/`) is the operator console.
 
 Stack: Express 5, TypeScript (strict), TypeORM + SQLite (`better-sqlite3`), class-validator, pino, Jest + supertest.
 
@@ -57,6 +57,26 @@ npm run dev
 | `npm start` | Run the compiled server |
 
 Interactive API docs (Swagger UI, no key needed): `http://localhost:3000/docs/`. Spec: `docs/openapi.yaml`.
+
+## Frontend
+
+Vite + React 18 + TypeScript + Tailwind v4 + TanStack Query, in `frontend/`.
+
+```bash
+cd frontend
+npm install
+npm run dev     # http://localhost:5173, needs the backend running on :3000
+```
+
+Open **Settings** (top right) and paste the backend `API_KEY`. The default API URL `/api` goes through the Vite dev proxy to `http://localhost:3000`, so CORS is not involved. An absolute URL talks to the backend directly and needs `CORS_ORIGINS=http://localhost:5173`. Settings are kept in `sessionStorage`, so they last only for the browser tab session.
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Dev server with the `/api` proxy |
+| `npm run build` | Type-check and production build to `dist/` |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc -b --noEmit` |
+| `npm test` | Vitest + Testing Library |
 
 ## Environment variables
 
