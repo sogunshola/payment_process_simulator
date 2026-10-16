@@ -3,8 +3,10 @@ import 'dotenv/config';
 import { loadConfig } from './config/env';
 import { createLogger } from './common/logger';
 import { createDataSource } from './database/data-source';
+import { createGatewayModule } from './modules/gateway/gateway.module';
 import { createHealthModule } from './modules/health/health.module';
 import { createPaymentsModule } from './modules/payments/payments.module';
+import { createProcessingModule } from './modules/processing/processing.module';
 import { createApp } from './app';
 
 async function main(): Promise<void> {
@@ -27,12 +29,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const app = createApp([createHealthModule(dataSource), createPaymentsModule(dataSource)], logger);
+  const gatewayModule = createGatewayModule(config.gateway, logger);
+  const { processor } = createProcessingModule(dataSource, gatewayModule.gateway, config.processor, logger);
+
+  // Before listening, so the processor never races requests against rows from a crashed run.
+  try {
+    await processor.recoverStuck();
+  } catch (err) {
+    logger.fatal({ err }, 'Recovering stuck payments failed');
+    process.exit(1);
+  }
+
+  const app = createApp(
+    [createHealthModule(dataSource), createPaymentsModule(dataSource), gatewayModule],
+    logger,
+  );
   // No listen callback: Express 5 also invokes it with the error on EADDRINUSE,
   // which would log a false "listening" line.
   const server = app.listen(config.port);
   server.on('listening', () => {
     logger.info({ port: config.port }, 'Server listening');
+    processor.start();
   });
 
   // e.g. EADDRINUSE: without this the process would crash with a raw stack.
@@ -47,28 +64,39 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down');
 
-    // If in-flight requests or keep-alive sockets never drain, do not hang forever.
+    // Must exceed processor.stop(), which may legitimately wait up to 10s for in-flight
+    // payments; with the old 10s timer the force-exit would fire before it finished.
     setTimeout(() => {
       logger.error('Shutdown timed out, forcing exit');
       process.exit(1);
-    }, 10_000).unref();
+    }, 20_000).unref();
 
-    // Stop accepting connections; callback fires once in-flight requests finish.
-    server.close((closeErr) => {
-      if (closeErr) logger.error({ err: closeErr }, 'Error closing HTTP server');
-      dataSource
-        .destroy()
-        .then(() => {
-          logger.info('Shutdown complete');
-          process.exit(0);
-        })
-        .catch((err: unknown) => {
-          logger.error({ err }, 'Error closing database');
-          process.exit(1);
+    // Stop the processor first so no payment is mid-flight while the DB closes.
+    // stop() never rejects; it gives up waiting after its own timeout.
+    processor
+      .stop()
+      .then(() => {
+        // Stop accepting connections; callback fires once in-flight requests finish.
+        server.close((closeErr) => {
+          if (closeErr) logger.error({ err: closeErr }, 'Error closing HTTP server');
+          dataSource
+            .destroy()
+            .then(() => {
+              logger.info('Shutdown complete');
+              process.exit(0);
+            })
+            .catch((err: unknown) => {
+              logger.error({ err }, 'Error closing database');
+              process.exit(1);
+            });
         });
-    });
-    // Idle keep-alive connections would otherwise block close() until they time out.
-    server.closeIdleConnections();
+        // Idle keep-alive connections would otherwise block close() until they time out.
+        server.closeIdleConnections();
+      })
+      .catch((err: unknown) => {
+        logger.error({ err }, 'Error stopping payment processor');
+        process.exit(1);
+      });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

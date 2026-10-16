@@ -2,6 +2,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsString,
   Max,
   Min,
@@ -18,9 +19,28 @@ export interface AppConfig {
   readonly apiKey: string;
   readonly corsOrigins: readonly string[];
   readonly nodeEnv: NodeEnvName;
+  readonly gateway: {
+    readonly minLatencyMs: number;
+    readonly maxLatencyMs: number;
+    readonly failureRate: number;
+    readonly declineRate: number;
+    readonly timeoutRate: number;
+  };
+  readonly processor: {
+    readonly gatewayTimeoutMs: number;
+    readonly pollIntervalMs: number;
+    readonly batchSize: number;
+    readonly maxAttempts: number;
+  };
 }
 
 const isBlank = (v: unknown) => v === undefined || v === '';
+// Blank means "use the default"; anything else is converted and left to the validators
+// (Number('abc') is NaN, which IsInt/IsNumber reject).
+const numberOr =
+  (def: number) =>
+  ({ value }: { value: unknown }) =>
+    isBlank(value) ? def : Number(value);
 
 class EnvVars {
   @Transform(({ value }: { value: unknown }) => (isBlank(value) ? 3000 : Number(value)))
@@ -46,6 +66,60 @@ class EnvVars {
   @Transform(({ value }: { value: unknown }) => (isBlank(value) ? 'development' : value))
   @IsIn(['development', 'test', 'production'])
   NODE_ENV!: NodeEnvName;
+
+  @Transform(numberOr(100))
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  GATEWAY_MIN_LATENCY_MS!: number;
+
+  @Transform(numberOr(800))
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  GATEWAY_MAX_LATENCY_MS!: number;
+
+  @Transform(numberOr(0.2))
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  GATEWAY_FAILURE_RATE!: number;
+
+  @Transform(numberOr(0.1))
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  GATEWAY_DECLINE_RATE!: number;
+
+  @Transform(numberOr(0.05))
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  GATEWAY_TIMEOUT_RATE!: number;
+
+  @Transform(numberOr(5000))
+  @IsInt()
+  @Min(100)
+  @Max(60_000)
+  GATEWAY_TIMEOUT_MS!: number;
+
+  @Transform(numberOr(1000))
+  @IsInt()
+  @Min(100)
+  @Max(60_000)
+  PROCESSOR_POLL_INTERVAL_MS!: number;
+
+  @Transform(numberOr(10))
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  PROCESSOR_BATCH_SIZE!: number;
+
+  @Transform(numberOr(5))
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  PROCESSOR_MAX_ATTEMPTS!: number;
 }
 
 function parseOrigins(raw: string): { origins: string[]; invalid: string[] } {
@@ -78,6 +152,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     API_KEY: env.API_KEY,
     CORS_ORIGINS: env.CORS_ORIGINS,
     NODE_ENV: env.NODE_ENV,
+    GATEWAY_MIN_LATENCY_MS: env.GATEWAY_MIN_LATENCY_MS,
+    GATEWAY_MAX_LATENCY_MS: env.GATEWAY_MAX_LATENCY_MS,
+    GATEWAY_FAILURE_RATE: env.GATEWAY_FAILURE_RATE,
+    GATEWAY_DECLINE_RATE: env.GATEWAY_DECLINE_RATE,
+    GATEWAY_TIMEOUT_RATE: env.GATEWAY_TIMEOUT_RATE,
+    GATEWAY_TIMEOUT_MS: env.GATEWAY_TIMEOUT_MS,
+    PROCESSOR_POLL_INTERVAL_MS: env.PROCESSOR_POLL_INTERVAL_MS,
+    PROCESSOR_BATCH_SIZE: env.PROCESSOR_BATCH_SIZE,
+    PROCESSOR_MAX_ATTEMPTS: env.PROCESSOR_MAX_ATTEMPTS,
   });
 
   const problems: string[] = [];
@@ -98,6 +181,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  // Cross-field rules only make sense once each field is individually valid.
+  if (problems.length === 0) {
+    if (vars.GATEWAY_MIN_LATENCY_MS > vars.GATEWAY_MAX_LATENCY_MS) {
+      problems.push('GATEWAY_MIN_LATENCY_MS must be <= GATEWAY_MAX_LATENCY_MS');
+    }
+    // The three outcomes share one random roll, so their rates must fit in [0, 1].
+    const rateSum = vars.GATEWAY_FAILURE_RATE + vars.GATEWAY_DECLINE_RATE + vars.GATEWAY_TIMEOUT_RATE;
+    if (rateSum > 1 + 1e-9) {
+      problems.push('GATEWAY_FAILURE_RATE + GATEWAY_DECLINE_RATE + GATEWAY_TIMEOUT_RATE must be <= 1');
+    }
+  }
+
   if (problems.length > 0) {
     throw new Error(`Invalid environment configuration:\n - ${problems.join('\n - ')}`);
   }
@@ -108,5 +203,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiKey: vars.API_KEY,
     corsOrigins: Object.freeze(origins),
     nodeEnv: vars.NODE_ENV,
+    gateway: Object.freeze({
+      minLatencyMs: vars.GATEWAY_MIN_LATENCY_MS,
+      maxLatencyMs: vars.GATEWAY_MAX_LATENCY_MS,
+      failureRate: vars.GATEWAY_FAILURE_RATE,
+      declineRate: vars.GATEWAY_DECLINE_RATE,
+      timeoutRate: vars.GATEWAY_TIMEOUT_RATE,
+    }),
+    processor: Object.freeze({
+      gatewayTimeoutMs: vars.GATEWAY_TIMEOUT_MS,
+      pollIntervalMs: vars.PROCESSOR_POLL_INTERVAL_MS,
+      batchSize: vars.PROCESSOR_BATCH_SIZE,
+      maxAttempts: vars.PROCESSOR_MAX_ATTEMPTS,
+    }),
   });
 }

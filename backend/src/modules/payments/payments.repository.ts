@@ -1,4 +1,4 @@
-import { DataSource, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, IsNull, LessThanOrEqual, QueryFailedError, Repository } from 'typeorm';
 import { Payment } from './payment.entity';
 import { PaymentStatus } from './payment-status';
 
@@ -52,6 +52,27 @@ export class PaymentsRepository {
 
   findByIdempotencyKey(key: string): Promise<Payment | null> {
     return this.repo.findOneBy({ idempotencyKey: key });
+  }
+
+  /**
+   * PENDING payments whose retry time has arrived (or that were never scheduled).
+   * Uses find operators rather than a raw query so TypeORM converts the Date to the
+   * same stored format as the column; SQLite sorts NULL first, so fresh payments
+   * come before retries, and createdAt keeps the order fair among equals.
+   */
+  findDue(now: Date, limit: number): Promise<Payment[]> {
+    return this.repo.find({
+      where: [
+        { status: PaymentStatus.PENDING, nextAttemptAt: IsNull() },
+        { status: PaymentStatus.PENDING, nextAttemptAt: LessThanOrEqual(now) },
+      ],
+      order: { nextAttemptAt: 'ASC', createdAt: 'ASC', id: 'ASC' },
+      take: limit,
+    });
+  }
+
+  findByStatus(status: PaymentStatus): Promise<Payment[]> {
+    return this.repo.find({ where: { status }, order: { createdAt: 'ASC', id: 'ASC' } });
   }
 
   async list(
