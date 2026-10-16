@@ -45,3 +45,9 @@ export class ServiceUnavailableError extends AppError {
     super(message, 503, details);
   }
 }
+
+export class TooManyRequestsError extends AppError {
+  constructor(message = 'Too many requests', details: unknown = null) {
+    super(message, 429, details);
+  }
+}

@@ -1,4 +1,6 @@
-import { loadConfig } from './env';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { loadConfig, PLACEHOLDER_API_KEY } from './env';
 
 const KEY = 'a-very-secret-key-1234';
 const valid = { API_KEY: KEY };
@@ -12,6 +14,7 @@ describe('loadConfig', () => {
       apiKey: KEY,
       corsOrigins: ['http://localhost:5173'],
       nodeEnv: 'development',
+      rateLimit: { windowMs: 60_000, max: 300, createMax: 30 },
       gateway: { minLatencyMs: 100, maxLatencyMs: 800, failureRate: 0.2, declineRate: 0.1, timeoutRate: 0.05 },
       processor: { gatewayTimeoutMs: 5000, pollIntervalMs: 1000, batchSize: 10, maxAttempts: 5 },
     });
@@ -123,5 +126,57 @@ describe('loadConfig', () => {
     expect(message).toMatch(/NODE_ENV/);
     expect(message).toMatch(/CORS_ORIGINS/);
     expect(message).not.toContain(secret);
+  });
+
+  it('parses explicit rate limit values', () => {
+    const c = loadConfig({
+      ...valid,
+      RATE_LIMIT_WINDOW_MS: '1000',
+      RATE_LIMIT_MAX: '5',
+      RATE_LIMIT_CREATE_MAX: '2',
+    });
+    expect(c.rateLimit).toEqual({ windowMs: 1000, max: 5, createMax: 2 });
+  });
+
+  it.each([
+    ['RATE_LIMIT_WINDOW_MS', '999'],
+    ['RATE_LIMIT_WINDOW_MS', '3600001'],
+    ['RATE_LIMIT_MAX', '0'],
+    ['RATE_LIMIT_MAX', '100001'],
+    ['RATE_LIMIT_CREATE_MAX', '0'],
+    ['RATE_LIMIT_CREATE_MAX', '1.5'],
+    ['RATE_LIMIT_CREATE_MAX', 'abc'],
+  ])('fails on bad %s=%s', (name, value) => {
+    expect(() => loadConfig({ ...valid, [name]: value })).toThrow(new RegExp(name));
+  });
+
+  describe('production boot', () => {
+    it('refuses the placeholder API_KEY without printing it', () => {
+      let message = '';
+      try {
+        loadConfig({ API_KEY: PLACEHOLDER_API_KEY, NODE_ENV: 'production' });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toMatch(/API_KEY is still the placeholder/);
+      expect(message).not.toContain(PLACEHOLDER_API_KEY);
+    });
+
+    it('accepts a real API_KEY', () => {
+      expect(loadConfig({ API_KEY: KEY, NODE_ENV: 'production' }).nodeEnv).toBe('production');
+    });
+
+    it('refuses a missing API_KEY', () => {
+      expect(() => loadConfig({ NODE_ENV: 'production' })).toThrow(/API_KEY/);
+    });
+
+    it('allows the placeholder outside production', () => {
+      expect(loadConfig({ API_KEY: PLACEHOLDER_API_KEY, NODE_ENV: 'development' }).apiKey).toBe(PLACEHOLDER_API_KEY);
+    });
+
+    it('keeps .env.example in sync with the placeholder constant', () => {
+      const example = readFileSync(join(__dirname, '../../.env.example'), 'utf8');
+      expect(example).toContain(`API_KEY=${PLACEHOLDER_API_KEY}\n`);
+    });
   });
 });

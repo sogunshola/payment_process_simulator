@@ -1,0 +1,570 @@
+openapi: 3.0.3
+info:
+  title: Payment Processing Simulation API
+  version: 1.0.0
+  description: |
+    Simulated payment processing. Payments are accepted (202) and processed asynchronously
+    by a background worker through a simulated gateway.
+
+    Amounts are integers in minor units (e.g. kobo or cents). Timestamps are UTC ISO 8601.
+    Every error uses the same JSON shape (see the `Error` schema).
+
+    All endpoints except `GET /health` and this documentation require the `X-API-Key` header.
+    Unknown routes also answer 401 without a key, so the API does not reveal which paths exist.
+servers:
+  - url: http://localhost:3000
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: Health
+  - name: Payments
+  - name: Gateway
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness and database check
+      security: []
+      responses:
+        '200':
+          description: Service and database are up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /payments:
+    post:
+      tags: [Payments]
+      summary: Create a payment
+      description: |
+        The payment is stored as PENDING and processed asynchronously (202). Send an
+        `Idempotency-Key` to make retries safe: repeating the same request with the same key
+        returns the original payment (200) instead of creating another. The same key with a
+        different body returns 409. This route has a stricter rate limit than the others.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePayment'
+      responses:
+        '202':
+          description: Payment accepted and queued for processing.
+          headers:
+            Location:
+              description: Path of the new payment.
+              schema:
+                type: string
+                example: /payments/3f2b8c1e-5a77-4c52-9d0e-6a1d8b3c4e5f
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '200':
+          description: Replay of an earlier request with the same Idempotency-Key; the original payment is returned.
+          headers:
+            Idempotent-Replayed:
+              description: Always `true` on a replay.
+              schema:
+                type: string
+                enum: ['true']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Payments]
+      summary: List payments, newest first
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PaymentStatus'
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: One page of payments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /payments/stats:
+    get:
+      tags: [Payments]
+      summary: Number of payments per status
+      responses:
+        '200':
+          description: Counts for every status (zero included) plus the total.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /payments/{id}:
+    get:
+      tags: [Payments]
+      summary: Get one payment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: The payment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /payments/{id}/status:
+    patch:
+      tags: [Payments]
+      summary: Change a payment's status
+      description: |
+        Allowed transitions: PENDING to CANCELLED; PROCESSING to SUCCEEDED, FAILED or PENDING (retry).
+        SUCCEEDED, FAILED and CANCELLED are final. PROCESSING cannot be requested; only the
+        background processor sets it. The update is a compare-and-set, so if the payment
+        changed after it was read the request fails with 409 against the fresh status.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatus'
+      responses:
+        '200':
+          description: The updated payment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /gateway/config:
+    get:
+      tags: [Gateway]
+      summary: Current simulated gateway behaviour
+      responses:
+        '200':
+          description: Current configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Gateway]
+      summary: Replace the simulated gateway behaviour
+      description: |
+        Full replace: every field is required. Cross-field rules, enforced with 400 and not
+        expressible in JSON Schema:
+        `maxLatencyMs >= minLatencyMs` and `failureRate + declineRate + timeoutRate <= 1`
+        (the three outcomes share one random roll). The setting lives in memory and is lost
+        on restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayConfig'
+      responses:
+        '200':
+          description: The configuration now in effect.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-chosen key that makes retrying this request safe.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_.:-]{1,255}$'
+    PaymentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Health:
+      type: object
+      required: [status, database, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        database:
+          type: string
+          enum: [up]
+        timestamp:
+          type: string
+          format: date-time
+    PaymentStatus:
+      type: string
+      enum: [PENDING, PROCESSING, SUCCEEDED, FAILED, CANCELLED]
+    Currency:
+      type: string
+      enum: [NGN, USD, EUR, GBP]
+    CreatePayment:
+      type: object
+      additionalProperties: false
+      required: [reference, amount, currency]
+      properties:
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Caller's reference. Must not be blank.
+        amount:
+          type: integer
+          minimum: 1
+          maximum: 1000000000
+          description: Minor units (e.g. 5000 is 50.00). Floats and numeric strings are rejected.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        description:
+          type: string
+          maxLength: 256
+        customerEmail:
+          type: string
+          format: email
+          maxLength: 254
+    UpdateStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PENDING, SUCCEEDED, FAILED, CANCELLED]
+          description: PROCESSING is reserved for the payment processor.
+        reason:
+          type: string
+          maxLength: 256
+    PaymentHistoryEntry:
+      type: object
+      required: [status, at]
+      properties:
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        at:
+          type: string
+          format: date-time
+        note:
+          type: string
+    Payment:
+      type: object
+      required:
+        - id
+        - reference
+        - amount
+        - currency
+        - description
+        - customerEmail
+        - status
+        - failureReason
+        - attempts
+        - nextAttemptAt
+        - idempotencyKey
+        - version
+        - history
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+        amount:
+          type: integer
+          description: Minor units.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        description:
+          type: string
+          nullable: true
+        customerEmail:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        failureReason:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+          description: Gateway attempts so far.
+        nextAttemptAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When a retry becomes due; null if not scheduled.
+        idempotencyKey:
+          type: string
+          nullable: true
+        version:
+          type: integer
+          minimum: 1
+          description: Optimistic concurrency token, bumped on every update.
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentHistoryEntry'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PaymentList:
+      type: object
+      required: [data, page, limit, total]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+          description: Matching payments across all pages.
+    PaymentStats:
+      type: object
+      required: [PENDING, PROCESSING, SUCCEEDED, FAILED, CANCELLED, total]
+      properties:
+        PENDING:
+          type: integer
+        PROCESSING:
+          type: integer
+        SUCCEEDED:
+          type: integer
+        FAILED:
+          type: integer
+        CANCELLED:
+          type: integer
+        total:
+          type: integer
+    GatewayConfig:
+      type: object
+      additionalProperties: false
+      required: [minLatencyMs, maxLatencyMs, failureRate, declineRate, timeoutRate]
+      properties:
+        minLatencyMs:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        maxLatencyMs:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Must be >= minLatencyMs.
+        failureRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Chance of a transient error.
+        declineRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Chance of a final decline.
+        timeoutRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Chance the call hangs until aborted. failureRate + declineRate + timeoutRate must be <= 1.
+    ValidationDetail:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+    Error:
+      type: object
+      required: [statusCode, error, message, details, path, requestId, timestamp]
+      properties:
+        statusCode:
+          type: integer
+        error:
+          type: string
+          description: HTTP status text.
+        message:
+          type: string
+        details:
+          nullable: true
+          description: An array of field errors for validation failures, an object for some conflicts, otherwise null.
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/ValidationDetail'
+            - type: object
+        path:
+          type: string
+          description: Request path without the query string.
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+  responses:
+    BadRequest:
+      description: Validation failed, malformed JSON, or invalid Idempotency-Key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid X-API-Key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Payment not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Illegal status transition, payment changed concurrently, or Idempotency-Key reused with a different body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: Request body over 10kb.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        RateLimit:
+          description: Current limit state (IETF draft-7 structured fields).
+          schema:
+            type: string
+        RateLimit-Policy:
+          description: The policy that applies (IETF draft-7).
+          schema:
+            type: string
+        Retry-After:
+          description: Seconds until the window resets.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: Database unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected server error. No internal details are returned.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

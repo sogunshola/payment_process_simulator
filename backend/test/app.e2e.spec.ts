@@ -6,6 +6,7 @@ import { createLogger } from '../src/common/logger';
 import { loadConfig } from '../src/config/env';
 import { createDataSource } from '../src/database/data-source';
 import { createHealthModule } from '../src/modules/health/health.module';
+import { appOptions, authed, TEST_API_KEY } from './support';
 
 // Test-only entity: proves the real better-sqlite3 error code is what the handler matches.
 @Entity()
@@ -14,7 +15,7 @@ class Widget {
   @Column({ unique: true }) name!: string;
 }
 
-const config = loadConfig({ API_KEY: 'test-api-key-0123456789', DB_PATH: ':memory:', NODE_ENV: 'test' });
+const config = loadConfig({ API_KEY: TEST_API_KEY, DB_PATH: ':memory:', NODE_ENV: 'test' });
 const logger = createLogger(config);
 const SHAPE = ['details', 'error', 'message', 'path', 'requestId', 'statusCode', 'timestamp'];
 
@@ -25,7 +26,7 @@ describe('app (e2e)', () => {
   beforeEach(async () => {
     dataSource = createDataSource(config);
     await dataSource.initialize();
-    app = createApp([createHealthModule(dataSource)], logger);
+    app = createApp([createHealthModule(dataSource)], logger, appOptions);
   });
 
   afterEach(async () => {
@@ -48,13 +49,13 @@ describe('app (e2e)', () => {
   });
 
   it('returns a standard 404 for unknown routes', async () => {
-    const res = await request(app).get('/nope?x=1').expect(404);
+    const res = await authed(app).get('/nope?x=1').expect(404);
     expect(Object.keys(res.body).sort()).toEqual(SHAPE);
     expect(res.body).toMatchObject({ statusCode: 404, error: 'Not Found', path: '/nope' });
   });
 
   it('returns 400 for malformed JSON', async () => {
-    const res = await request(app)
+    const res = await authed(app)
       .post('/anything')
       .set('Content-Type', 'application/json')
       .send('{"broken":')
@@ -64,7 +65,7 @@ describe('app (e2e)', () => {
   });
 
   it('returns 413 for an oversized body', async () => {
-    const res = await request(app)
+    const res = await authed(app)
       .post('/anything')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({ pad: 'x'.repeat(150 * 1024) }))
@@ -73,13 +74,13 @@ describe('app (e2e)', () => {
   });
 
   it('echoes an incoming X-Request-Id in header and error body', async () => {
-    const res = await request(app).get('/nope').set('X-Request-Id', 'trace-42').expect(404);
+    const res = await authed(app).get('/nope').set('X-Request-Id', 'trace-42').expect(404);
     expect(res.headers['x-request-id']).toBe('trace-42');
     expect(res.body.requestId).toBe('trace-42');
   });
 
   it('replaces an unsafe X-Request-Id', async () => {
-    const res = await request(app).get('/nope').set('X-Request-Id', 'bad id with spaces').expect(404);
+    const res = await authed(app).get('/nope').set('X-Request-Id', 'bad id with spaces').expect(404);
     expect(res.headers['x-request-id']).not.toBe('bad id with spaces');
   });
 
@@ -99,8 +100,8 @@ describe('app (e2e)', () => {
         await repo.insert({ name: 'dup' });
         res.status(201).end();
       });
-      const testApp = createApp([{ router }], logger);
-      const res = await request(testApp).post('/widgets').expect(409);
+      const testApp = createApp([{ router }], logger, appOptions);
+      const res = await authed(testApp).post('/widgets').expect(409);
       expect(res.body).toMatchObject({ statusCode: 409, message: 'Resource already exists' });
       expect(JSON.stringify(res.body)).not.toMatch(/INSERT|UNIQUE|SQLITE/i);
     } finally {

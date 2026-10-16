@@ -1,83 +1,159 @@
 # Payment Processing Simulation
 
-A Node.js microservice that simulates payment processing, with a React frontend to follow. The backend is Express 5 + TypeScript (strict) + TypeORM on SQLite.
+A Node.js microservice that simulates payment processing. Clients create payments through a REST API; a background worker charges them through a simulated, deliberately flaky gateway, with retries, idempotency and safe concurrent updates. A React frontend is planned.
 
-## Backend
+Stack: Express 5, TypeScript (strict), TypeORM + SQLite (`better-sqlite3`), class-validator, pino, Jest + supertest.
+
+## Overview
+
+```
+backend/src
+  server.ts        startup, graceful shutdown, process-level handlers
+  app.ts           Express assembly; middleware order lives here
+  config/          validated environment variables
+  database/        DataSource factory
+  common/          logger, typed errors, shared middleware
+  modules/<name>/  entity, dtos, repository, service, controller, routes, module
+backend/test       e2e tests (supertest, in-memory SQLite)
+docs/              openapi.yaml, FAILURE_MODES.md
+```
+
+Module convention: controller, service, repository. Only repositories touch TypeORM. `<name>.module.ts` wires the pieces by hand; there is no DI framework. Modules: `health`, `payments`, `gateway` (simulated provider and its chaos config), `processing` (background worker, no HTTP surface).
+
+Payment lifecycle:
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING
+  PENDING --> PROCESSING: worker claims (CAS)
+  PENDING --> CANCELLED: API
+  PROCESSING --> SUCCEEDED: gateway approves
+  PROCESSING --> FAILED: decline / retries exhausted
+  PROCESSING --> PENDING: transient error, retry with backoff
+  SUCCEEDED --> [*]
+  FAILED --> [*]
+  CANCELLED --> [*]
+```
+
+## Quick start
 
 Prerequisite: Node.js >= 20.
 
 ```bash
 cd backend
 npm install
-cp .env.example .env   # then set API_KEY (min 16 chars) to your own secret
+cp .env.example .env     # then set API_KEY to your own secret (min 16 chars)
 npm run dev
 ```
 
-| Script | Purpose |
+| Command | Purpose |
 | --- | --- |
 | `npm run dev` | Run with auto-reload (tsx) |
-| `npm run build` | Compile to `dist/` |
-| `npm start` | Run the compiled server |
-| `npm run lint` | ESLint (type-checked rules) |
-| `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Unit and e2e tests |
 | `npm run test:cov` | Tests with coverage |
+| `npm run lint` | ESLint (type-checked rules) |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run build` | Compile to `dist/` |
+| `npm start` | Run the compiled server |
 
-Configuration is read only from validated environment variables (see `backend/.env.example`); the service refuses to start if any are invalid.
+Interactive API docs (Swagger UI, no key needed): `http://localhost:3000/docs/`. Spec: `docs/openapi.yaml`.
 
-TypeORM `synchronize` is on outside production for convenience. Production would use migrations instead.
+## Environment variables
 
-## Payments API
+Validated at startup; the service refuses to start if any is invalid (the message never prints the API key).
 
-Endpoints are not yet authenticated (API key auth comes later). Amounts are integers in minor units (e.g. kobo/cents); currencies are `NGN`, `USD`, `EUR`, `GBP`.
+| Variable | Default | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `PORT` | 3000 | int 1-65535 | HTTP port |
+| `DB_PATH` | `payments.sqlite` | non-empty | SQLite file (`:memory:` for throwaway runs) |
+| `API_KEY` | none (required) | string, min 16 chars; in production must not be the `.env.example` placeholder | Shared secret for the `X-API-Key` header |
+| `CORS_ORIGINS` | `http://localhost:5173` | comma-separated origins, no paths | Browser origins allowed to call the API |
+| `NODE_ENV` | `development` | `development`, `test`, `production` | Production turns off schema `synchronize` |
+| `RATE_LIMIT_WINDOW_MS` | 60000 | int 1000-3600000 | Rate-limit window |
+| `RATE_LIMIT_MAX` | 300 | int 1-100000 | Requests per client IP per window, all routes |
+| `RATE_LIMIT_CREATE_MAX` | 30 | int 1-100000 | Extra, stricter limit for `POST /payments` |
+| `GATEWAY_MIN_LATENCY_MS` | 100 | int 0-10000, <= max | Simulated gateway latency, lower bound |
+| `GATEWAY_MAX_LATENCY_MS` | 800 | int 0-10000 | Simulated gateway latency, upper bound |
+| `GATEWAY_FAILURE_RATE` | 0.2 | 0-1 | Chance of a transient error |
+| `GATEWAY_DECLINE_RATE` | 0.1 | 0-1 | Chance of a final decline |
+| `GATEWAY_TIMEOUT_RATE` | 0.05 | 0-1; the three rates sum to <= 1 | Chance the call hangs until aborted |
+| `GATEWAY_TIMEOUT_MS` | 5000 | int 100-60000 | How long the worker waits for one gateway call |
+| `PROCESSOR_POLL_INTERVAL_MS` | 1000 | int 100-60000 | Time between worker ticks |
+| `PROCESSOR_BATCH_SIZE` | 10 | int 1-100 | Payments per tick |
+| `PROCESSOR_MAX_ATTEMPTS` | 5 | int 1-20 | Attempts before a payment fails |
+
+## API
+
+Every route except `GET /health` and `/docs` needs `X-API-Key`. Unknown routes also return 401 without a key, so paths are not revealed. Amounts are integers in minor units (5000 NGN = 50.00); currencies are `NGN`, `USD`, `EUR`, `GBP`. All errors share one shape: `{ statusCode, error, message, details, path, requestId, timestamp }`.
 
 | Method and path | Success | Errors |
 | --- | --- | --- |
-| `POST /payments` | 202 + `Location: /payments/<id>`; 200 + `Idempotent-Replayed: true` on replay | 400 validation or bad `Idempotency-Key`; 409 key reused with a different body |
-| `GET /payments?status=&page=&limit=` | 200 `{ data, page, limit, total }` (newest first, `limit` max 100, default 20) | 400 invalid query |
+| `GET /health` | 200 | 503 database down |
+| `POST /payments` | 202 + `Location`; 200 + `Idempotent-Replayed: true` on replay | 400, 409 key reused with another body, 413, 429 |
+| `GET /payments?status=&page=&limit=` | 200 `{ data, page, limit, total }`, newest first, limit max 100 | 400 |
 | `GET /payments/stats` | 200 count per status plus `total` | |
-| `GET /payments/:id` | 200 | 400 not a UUID; 404 |
-| `PATCH /payments/:id/status` body `{ status, reason? }` | 200 updated payment | 400 invalid status or `PROCESSING` (reserved for the processor); 404; 409 illegal transition |
+| `GET /payments/{id}` | 200 | 400 not a UUID, 404 |
+| `PATCH /payments/{id}/status` | 200 | 400, 404, 409 illegal transition |
+| `GET /gateway/config` | 200 | |
+| `PUT /gateway/config` | 200 (full replace) | 400 |
 
-Statuses: `PENDING -> PROCESSING | CANCELLED`, `PROCESSING -> SUCCEEDED | FAILED | PENDING (retry)`. `SUCCEEDED`, `FAILED` and `CANCELLED` are final.
+All routes can also return 401 and 429.
 
-Idempotency: send an optional `Idempotency-Key` header (`[A-Za-z0-9_.:-]`, 1-255 chars) on `POST /payments`. Repeating the same request with the same key returns the original payment (200) instead of creating another; the same key with a different body returns 409.
+```bash
+export K='X-API-Key: your-secret'
+B=http://localhost:3000
 
-## Background processing
+curl $B/health
 
-A background processor in the same process picks up `PENDING` payments and charges them through a simulated gateway.
+curl -X POST $B/payments -H "$K" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-1001' \
+  -d '{"reference":"order-1001","amount":5000,"currency":"NGN","customerEmail":"a@example.com"}'
+# repeat the same command: 200 with Idempotent-Replayed: true and the same payment
 
-- **Lifecycle:** every `PROCESSOR_POLL_INTERVAL_MS` the processor loads up to `PROCESSOR_BATCH_SIZE` due payments, claims each with a compare-and-set (`PENDING -> PROCESSING`), calls the gateway, then writes `SUCCEEDED`, `FAILED`, or back to `PENDING` for a retry. Ticks never overlap.
-- **Retries:** transient gateway errors and timeouts are retried with exponential backoff and full jitter (random delay up to `min(30s, 1s * 2^attempts)`) until `PROCESSOR_MAX_ATTEMPTS`, then the payment fails with `max_attempts_exceeded`. A decline is final and not retried.
-- **Timeout:** a gateway call is aborted after `GATEWAY_TIMEOUT_MS` and counted as a transient failure, even if the gateway ignores the abort signal.
-- **Recovery:** on startup, before listening, any payment left in `PROCESSING` by a crash is returned to `PENDING` (without counting an attempt). On SIGTERM the processor waits up to 10s for in-flight payments; any left over are recovered on the next start.
-- **Single instance only:** recovery assumes every `PROCESSING` payment is abandoned, so running two instances would steal live work. A multi-instance design would need a lease column.
-- **Gateway chaos endpoint:** `GET /gateway/config` and `PUT /gateway/config` (full replace) read and change the simulated gateway's latency and failure rates at runtime, e.g. `{"minLatencyMs":0,"maxLatencyMs":10,"failureRate":0,"declineRate":1,"timeoutRate":0}` declines every payment. It is unauthenticated until API-key auth lands.
+curl -H "$K" "$B/payments?status=PENDING&page=1&limit=20"
+curl -H "$K" $B/payments/stats
+curl -H "$K" $B/payments/<id>
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GATEWAY_MIN_LATENCY_MS` / `GATEWAY_MAX_LATENCY_MS` | 100 / 800 | Simulated latency range (0-10000, min <= max) |
-| `GATEWAY_FAILURE_RATE` | 0.2 | Chance of a transient error |
-| `GATEWAY_DECLINE_RATE` | 0.1 | Chance of a decline |
-| `GATEWAY_TIMEOUT_RATE` | 0.05 | Chance the call hangs until aborted (the three rates must sum to <= 1) |
-| `GATEWAY_TIMEOUT_MS` | 5000 | How long the processor waits for one gateway call |
-| `PROCESSOR_POLL_INTERVAL_MS` | 1000 | Time between ticks |
-| `PROCESSOR_BATCH_SIZE` | 10 | Payments per tick |
-| `PROCESSOR_MAX_ATTEMPTS` | 5 | Attempts before a payment fails |
+curl -X PATCH $B/payments/<id>/status -H "$K" -H 'Content-Type: application/json' \
+  -d '{"status":"CANCELLED","reason":"customer changed mind"}'
 
-## Layout and conventions
-
-```
-backend/src
-  server.ts        startup, graceful shutdown, process-level handlers
-  app.ts           Express app assembly (middleware order lives here)
-  config/          env loading + validation
-  database/        DataSource factory
-  common/          logger, typed errors, shared middleware
-  modules/<name>/  entity, dtos, repository, service, controller, routes, module
-backend/test       end-to-end tests (supertest, in-memory SQLite)
+curl -H "$K" $B/gateway/config
+curl -X PUT $B/gateway/config -H "$K" -H 'Content-Type: application/json' \
+  -d '{"minLatencyMs":0,"maxLatencyMs":10,"failureRate":0,"declineRate":1,"timeoutRate":0}'   # decline everything
 ```
 
-Each module follows controller -> service -> repository. Only repositories touch TypeORM. The `<name>.module.ts` file wires dependencies by hand; there is no DI framework.
+## Design decisions and trade-offs
 
-All errors go through one handler and share one JSON shape. See `docs/FAILURE_MODES.md` for every handled failure and how it is tested.
+- **Layering without DI.** Controller, service, repository, wired by hand in each `*.module.ts`. Less indirection for a service this size; tests inject fakes through constructors.
+- **Integer minor units.** No floats for money; the DTO rejects floats and numeric strings.
+- **Compare-and-set with a version.** Status changes are `UPDATE ... WHERE id AND status AND version`, bumping `version`. Checking status alone is open to ABA: PENDING to PROCESSING to PENDING between a read and a write looks unchanged. A lost CAS returns 409 against the fresh state instead of overwriting.
+- **Idempotency.** Optional `Idempotency-Key` with a unique index. The lookup handles the common replay; the unique index decides a concurrent race, and the loser re-reads and replays the winner. Same key with a different body is 409.
+- **Self-scheduling worker.** Each tick schedules the next only after it finishes, so ticks never overlap. Claiming a payment is a CAS PENDING to PROCESSING, so two workers cannot take the same row.
+- **Full-jitter backoff.** Random delay up to `min(30s, 1s * 2^attempts)` avoids synchronised retry bursts.
+- **Timeout via abort and race.** The gateway call gets an `AbortSignal` and is also raced against a timer, so a gateway that ignores the signal cannot hang the batch.
+- **Gateway caches only final outcomes.** Approvals and declines are remembered per payment (no double charge); transient errors and timeouts are not, or retries would replay the failure.
+- **One error shape.** Typed `AppError` subclasses, one global handler; 429 and body-parser errors go through it too. No stack traces or driver text reach clients.
+- **Rate limit before auth.** Failed key guesses count against the limit. `POST /payments` has an additional stricter limit.
+- **Timing-safe key comparison.** Both keys are SHA-256 hashed and compared with `timingSafeEqual`, so key length is not leaked by an early length check.
+- **Security headers and CORS.** helmet defaults (its CSP works with Swagger UI unchanged: scripts are same-origin files, styles are allowed inline), 10kb body limit, CORS allow-list that omits the header instead of erroring for unknown origins. Logs redact the API key header and `customerEmail`.
+
+## Known limitations
+
+- SQLite, one file, one instance.
+- The worker runs inside the API process. Startup recovery assumes every PROCESSING row is abandoned, so a second instance would steal live work.
+- Gateway idempotency state and rate-limit counters are in memory: lost on restart, per process. Behind a reverse proxy, `trust proxy` must be configured or all clients share one rate-limit bucket.
+- Schema comes from TypeORM `synchronize`, which is off in production, so a fresh production database has no tables. Production mode is not runnable as-is.
+- A single shared API key, no per-client identity or revocation.
+- `PATCH` on a PROCESSING payment wins over the worker's result, but the gateway may already have charged; nothing reconciles that.
+- Everything untested is listed in `docs/FAILURE_MODES.md`.
+
+## What I would change for production
+
+- Postgres, with `SELECT ... FOR UPDATE SKIP LOCKED` or a lease column so several workers can run safely.
+- Real migrations instead of `synchronize`.
+- A real queue (BullMQ, SQS) and a separate worker process.
+- Per-client API keys, stored hashed, with rotation.
+- A distributed rate-limit store (Redis).
+- Outbox pattern and webhooks to notify clients of final status.
+- Metrics and tracing (queue depth, attempt counts, gateway latency).
+- Send idempotency keys to the real payment provider so a retry after a crash cannot double charge.

@@ -19,6 +19,11 @@ export interface AppConfig {
   readonly apiKey: string;
   readonly corsOrigins: readonly string[];
   readonly nodeEnv: NodeEnvName;
+  readonly rateLimit: {
+    readonly windowMs: number;
+    readonly max: number;
+    readonly createMax: number;
+  };
   readonly gateway: {
     readonly minLatencyMs: number;
     readonly maxLatencyMs: number;
@@ -33,6 +38,10 @@ export interface AppConfig {
     readonly maxAttempts: number;
   };
 }
+
+// Must equal the API_KEY value in .env.example (keep them in sync). Production refuses to
+// boot with it, so a copied-but-unedited .env cannot ship with a publicly known key.
+export const PLACEHOLDER_API_KEY = 'replace-me-with-a-long-random-secret';
 
 const isBlank = (v: unknown) => v === undefined || v === '';
 // Blank means "use the default"; anything else is converted and left to the validators
@@ -66,6 +75,24 @@ class EnvVars {
   @Transform(({ value }: { value: unknown }) => (isBlank(value) ? 'development' : value))
   @IsIn(['development', 'test', 'production'])
   NODE_ENV!: NodeEnvName;
+
+  @Transform(numberOr(60_000))
+  @IsInt()
+  @Min(1000)
+  @Max(3_600_000)
+  RATE_LIMIT_WINDOW_MS!: number;
+
+  @Transform(numberOr(300))
+  @IsInt()
+  @Min(1)
+  @Max(100_000)
+  RATE_LIMIT_MAX!: number;
+
+  @Transform(numberOr(30))
+  @IsInt()
+  @Min(1)
+  @Max(100_000)
+  RATE_LIMIT_CREATE_MAX!: number;
 
   @Transform(numberOr(100))
   @IsInt()
@@ -142,8 +169,8 @@ function parseOrigins(raw: string): { origins: string[]; invalid: string[] } {
  * Pure function of `env`: dotenv is loaded in server.ts, not here, so tests
  * stay deterministic and never pick up a developer's local .env.
  *
- * API_KEY and CORS_ORIGINS are validated now but only consumed by later
- * modules (auth middleware, CORS); failing fast here avoids a late surprise.
+ * server.ts calls this at boot, so every rule here (including the production
+ * placeholder-key check) is a fail-fast startup rule.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const vars = plainToInstance(EnvVars, {
@@ -152,6 +179,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     API_KEY: env.API_KEY,
     CORS_ORIGINS: env.CORS_ORIGINS,
     NODE_ENV: env.NODE_ENV,
+    RATE_LIMIT_WINDOW_MS: env.RATE_LIMIT_WINDOW_MS,
+    RATE_LIMIT_MAX: env.RATE_LIMIT_MAX,
+    RATE_LIMIT_CREATE_MAX: env.RATE_LIMIT_CREATE_MAX,
     GATEWAY_MIN_LATENCY_MS: env.GATEWAY_MIN_LATENCY_MS,
     GATEWAY_MAX_LATENCY_MS: env.GATEWAY_MAX_LATENCY_MS,
     GATEWAY_FAILURE_RATE: env.GATEWAY_FAILURE_RATE,
@@ -193,6 +223,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  // Message names the variable only, never the value.
+  if (vars.NODE_ENV === 'production' && vars.API_KEY === PLACEHOLDER_API_KEY) {
+    problems.push('API_KEY is still the placeholder from .env.example; set a real secret in production');
+  }
+
   if (problems.length > 0) {
     throw new Error(`Invalid environment configuration:\n - ${problems.join('\n - ')}`);
   }
@@ -203,6 +238,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiKey: vars.API_KEY,
     corsOrigins: Object.freeze(origins),
     nodeEnv: vars.NODE_ENV,
+    rateLimit: Object.freeze({
+      windowMs: vars.RATE_LIMIT_WINDOW_MS,
+      max: vars.RATE_LIMIT_MAX,
+      createMax: vars.RATE_LIMIT_CREATE_MAX,
+    }),
     gateway: Object.freeze({
       minLatencyMs: vars.GATEWAY_MIN_LATENCY_MS,
       maxLatencyMs: vars.GATEWAY_MAX_LATENCY_MS,

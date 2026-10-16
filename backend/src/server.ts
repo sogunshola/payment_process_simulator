@@ -43,6 +43,7 @@ async function main(): Promise<void> {
   const app = createApp(
     [createHealthModule(dataSource), createPaymentsModule(dataSource), gatewayModule],
     logger,
+    { apiKey: config.apiKey, corsOrigins: config.corsOrigins, rateLimit: config.rateLimit },
   );
   // No listen callback: Express 5 also invokes it with the error on EADDRINUSE,
   // which would log a false "listening" line.
