@@ -4,6 +4,7 @@ import { loadConfig } from './config/env';
 import { createLogger } from './common/logger';
 import { createDataSource } from './database/data-source';
 import { createHealthModule } from './modules/health/health.module';
+import { createPaymentsModule } from './modules/payments/payments.module';
 import { createApp } from './app';
 
 async function main(): Promise<void> {
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const app = createApp([createHealthModule(dataSource)], logger);
+  const app = createApp([createHealthModule(dataSource), createPaymentsModule(dataSource)], logger);
   // No listen callback: Express 5 also invokes it with the error on EADDRINUSE,
   // which would log a false "listening" line.
   const server = app.listen(config.port);

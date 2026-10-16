@@ -27,6 +27,22 @@ Configuration is read only from validated environment variables (see `backend/.e
 
 TypeORM `synchronize` is on outside production for convenience. Production would use migrations instead.
 
+## Payments API
+
+Endpoints are not yet authenticated (API key auth comes later). Amounts are integers in minor units (e.g. kobo/cents); currencies are `NGN`, `USD`, `EUR`, `GBP`.
+
+| Method and path | Success | Errors |
+| --- | --- | --- |
+| `POST /payments` | 202 + `Location: /payments/<id>`; 200 + `Idempotent-Replayed: true` on replay | 400 validation or bad `Idempotency-Key`; 409 key reused with a different body |
+| `GET /payments?status=&page=&limit=` | 200 `{ data, page, limit, total }` (newest first, `limit` max 100, default 20) | 400 invalid query |
+| `GET /payments/stats` | 200 count per status plus `total` | |
+| `GET /payments/:id` | 200 | 400 not a UUID; 404 |
+| `PATCH /payments/:id/status` body `{ status, reason? }` | 200 updated payment | 400 invalid status or `PROCESSING` (reserved for the processor); 404; 409 illegal transition |
+
+Statuses: `PENDING -> PROCESSING | CANCELLED`, `PROCESSING -> SUCCEEDED | FAILED | PENDING (retry)`. `SUCCEEDED`, `FAILED` and `CANCELLED` are final.
+
+Idempotency: send an optional `Idempotency-Key` header (`[A-Za-z0-9_.:-]`, 1-255 chars) on `POST /payments`. Repeating the same request with the same key returns the original payment (200) instead of creating another; the same key with a different body returns 409.
+
 ## Layout and conventions
 
 ```
