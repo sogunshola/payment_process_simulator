@@ -1,8 +1,10 @@
+import pino from 'pino';
 import { ConflictError, NotFoundError } from '../../common/errors';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { Payment } from './payment.entity';
+import { PaymentQueue } from './payment-queue';
 import { PaymentStatus } from './payment-status';
-import { DuplicateIdempotencyKeyError, PaymentsRepository } from './payments.repository';
+import { DuplicateIdempotencyKeyError, DuplicateReferenceError, PaymentsRepository } from './payments.repository';
 import { PaymentsService } from './payments.service';
 
 type Repo = jest.Mocked<
@@ -12,7 +14,7 @@ type Repo = jest.Mocked<
   >
 >;
 
-const dto: CreatePaymentDto = { reference: 'ref-1', amount: 5000, currency: 'NGN' };
+const dto: CreatePaymentDto = { amount: 5000, currency: 'NGN' };
 
 function makePayment(overrides: Partial<Payment> = {}): Payment {
   return {
@@ -37,6 +39,8 @@ function makePayment(overrides: Partial<Payment> = {}): Payment {
 
 describe('PaymentsService', () => {
   let repo: Repo;
+  let queue: jest.Mocked<PaymentQueue>;
+  let logger: { error: jest.Mock };
   let service: PaymentsService;
 
   beforeEach(() => {
@@ -48,7 +52,9 @@ describe('PaymentsService', () => {
       countByStatus: jest.fn(),
       updateIfStatus: jest.fn(),
     };
-    service = new PaymentsService(repo as unknown as PaymentsRepository);
+    queue = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    logger = { error: jest.fn() };
+    service = new PaymentsService(repo as unknown as PaymentsRepository, queue, logger as unknown as pino.Logger);
   });
 
   describe('create', () => {
@@ -90,6 +96,38 @@ describe('PaymentsService', () => {
       await expect(service.create(dto, 'k1')).rejects.toBeInstanceOf(ConflictError);
     });
 
+    it('replays with the original reference', async () => {
+      const existing = makePayment({ idempotencyKey: 'k1', reference: 'PAY-ORIGINAL00000' });
+      repo.findByIdempotencyKey.mockResolvedValue(existing);
+      const { payment } = await service.create(dto, 'k1');
+      expect(payment.reference).toBe('PAY-ORIGINAL00000');
+    });
+
+    it('regenerates the reference and retries on a reference collision', async () => {
+      const refs = ['PAY-AAA', 'PAY-BBB'];
+      const svc = new PaymentsService(
+        repo as unknown as PaymentsRepository,
+        queue,
+        logger as unknown as pino.Logger,
+        () => refs.shift() as string,
+      );
+      repo.create
+        .mockRejectedValueOnce(new DuplicateReferenceError())
+        .mockImplementationOnce((data) => Promise.resolve(makePayment(data as Partial<Payment>)));
+      const { payment } = await svc.create(dto);
+      expect(repo.create).toHaveBeenCalledTimes(2);
+      expect(repo.create.mock.calls.map((c) => c[0].reference)).toEqual(['PAY-AAA', 'PAY-BBB']);
+      expect(payment.reference).toBe('PAY-BBB');
+    });
+
+    it('gives up with a generic error after 3 reference collisions', async () => {
+      repo.create.mockRejectedValue(new DuplicateReferenceError());
+      const err = await service.create(dto).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(DuplicateReferenceError);
+      expect(repo.create).toHaveBeenCalledTimes(3);
+    });
+
     it('rethrows other create errors unchanged', async () => {
       const boom = new Error('disk full');
       repo.create.mockRejectedValue(boom);
@@ -128,6 +166,72 @@ describe('PaymentsService', () => {
     expect(repo.list).toHaveBeenCalledWith(undefined, 2, 1);
     expect(res).toMatchObject({ page: 2, limit: 1, total: 7 });
     expect(res.data).toHaveLength(1);
+  });
+
+  describe('queueing', () => {
+    beforeEach(() => {
+      repo.create.mockImplementation((data) => Promise.resolve(makePayment(data as Partial<Payment>)));
+    });
+
+    it('enqueues a newly created payment', async () => {
+      const { payment } = await service.create(dto);
+      expect(queue.enqueue).toHaveBeenCalledTimes(1);
+      expect(queue.enqueue).toHaveBeenCalledWith(payment.id);
+    });
+
+    it('does not enqueue on an idempotent replay', async () => {
+      repo.findByIdempotencyKey.mockResolvedValue(makePayment());
+      const { replayed } = await service.create(dto, 'k1');
+      expect(replayed).toBe(true);
+      expect(queue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue when it loses the idempotency race', async () => {
+      repo.findByIdempotencyKey.mockResolvedValueOnce(null).mockResolvedValueOnce(makePayment());
+      repo.create.mockRejectedValue(new DuplicateIdempotencyKeyError());
+      await service.create(dto, 'k1');
+      expect(queue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('still returns the payment, and logs, when the queue is down', async () => {
+      queue.enqueue.mockRejectedValue(new Error('redis down'));
+      const { payment, replayed } = await service.create(dto);
+      expect(payment.status).toBe(PaymentStatus.PENDING);
+      expect(replayed).toBe(false);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: payment.id }),
+        expect.stringContaining('Failed to enqueue'),
+      );
+    });
+
+    it('enqueues after a PATCH to PENDING, but not after other transitions', async () => {
+      repo.findById.mockResolvedValue(makePayment({ status: PaymentStatus.PROCESSING }));
+      repo.updateIfStatus.mockResolvedValue(true);
+      await service.updateStatus('id', { status: PaymentStatus.PENDING });
+      expect(queue.enqueue).toHaveBeenCalledWith('id');
+
+      queue.enqueue.mockClear();
+      repo.findById.mockResolvedValue(makePayment({ status: PaymentStatus.PENDING }));
+      await service.updateStatus('id', { status: PaymentStatus.CANCELLED });
+      expect(queue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue when the PATCH to PENDING loses the compare-and-set', async () => {
+      repo.findById
+        .mockResolvedValueOnce(makePayment({ status: PaymentStatus.PROCESSING }))
+        .mockResolvedValueOnce(makePayment({ status: PaymentStatus.SUCCEEDED, version: 2 }));
+      repo.updateIfStatus.mockResolvedValue(false);
+      await expect(service.updateStatus('id', { status: PaymentStatus.PENDING })).rejects.toBeInstanceOf(ConflictError);
+      expect(queue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds a PATCH to PENDING when the queue is down', async () => {
+      repo.findById.mockResolvedValue(makePayment({ status: PaymentStatus.PROCESSING }));
+      repo.updateIfStatus.mockResolvedValue(true);
+      queue.enqueue.mockRejectedValue(new Error('redis down'));
+      await expect(service.updateStatus('id', { status: PaymentStatus.PENDING })).resolves.toBeDefined();
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('updateStatus', () => {

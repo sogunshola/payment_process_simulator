@@ -53,9 +53,9 @@ export function ArenaHud({ hud }: { hud: Hud }) {
         )}
       </div>
       <div>
-        <div className="flex justify-between text-xs text-muted">
+        <div className="flex flex-wrap justify-between gap-x-4 text-xs text-muted">
           <span>{round ? `${round.name}: ${round.description}` : 'Waiting to start'}</span>
-          <span className="font-mono">{round ? `${Math.ceil(hud.roundRemainingMs / 1000)}s left` : ''}</span>
+          <span className="shrink-0 font-mono">{round ? `${Math.ceil(hud.roundRemainingMs / 1000)}s left` : ''}</span>
         </div>
         <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface">
           <div className="h-full bg-accent transition-[width] duration-1000 ease-linear" style={{ width: `${progress * 100}%` }} />

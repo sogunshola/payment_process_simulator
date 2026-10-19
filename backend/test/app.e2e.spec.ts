@@ -48,6 +48,16 @@ describe('app (e2e)', () => {
     expect(res.body).toMatchObject({ statusCode: 503, message: 'Database unavailable', details: null });
   });
 
+  it('GET /health reports redis up, and down (still 200) when the ping fails', async () => {
+    const up = createApp([createHealthModule(dataSource, () => Promise.resolve())], logger, appOptions);
+    expect((await request(up).get('/health').expect(200)).body).toMatchObject({ database: 'up', redis: 'up' });
+
+    const down = createApp([createHealthModule(dataSource, () => Promise.reject(new Error('ECONNREFUSED')))], logger, appOptions);
+    const res = await request(down).get('/health').expect(200);
+    expect(res.body).toMatchObject({ status: 'ok', database: 'up', redis: 'down' });
+    expect(JSON.stringify(res.body)).not.toContain('ECONNREFUSED');
+  });
+
   it('returns a standard 404 for unknown routes', async () => {
     const res = await authed(app).get('/nope?x=1').expect(404);
     expect(Object.keys(res.body).sort()).toEqual(SHAPE);

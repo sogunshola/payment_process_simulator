@@ -1,15 +1,24 @@
+import { Logger } from '../../common/logger';
 import { ConflictError, NotFoundError } from '../../common/errors';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListPaymentsQuery } from './dto/list-payments.query';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { Payment } from './payment.entity';
+import { PaymentQueue } from './payment-queue';
 import { PaymentStatus, canTransition } from './payment-status';
-import { DuplicateIdempotencyKeyError, PaymentsRepository } from './payments.repository';
+import { generateReference } from './payment-reference';
+import { DuplicateIdempotencyKeyError, DuplicateReferenceError, PaymentsRepository } from './payments.repository';
 
+const MAX_REFERENCE_ATTEMPTS = 3;
 const KEY_REUSED_MESSAGE = 'Idempotency-Key has already been used with a different request';
 
 export class PaymentsService {
-  constructor(private readonly repository: PaymentsRepository) {}
+  constructor(
+    private readonly repository: PaymentsRepository,
+    private readonly queue: PaymentQueue,
+    private readonly logger: Logger,
+    private readonly newReference: () => string = generateReference,
+  ) {}
 
   async create(dto: CreatePaymentDto, idempotencyKey?: string): Promise<{ payment: Payment; replayed: boolean }> {
     if (idempotencyKey) {
@@ -18,17 +27,8 @@ export class PaymentsService {
     }
 
     try {
-      const payment = await this.repository.create({
-        reference: dto.reference,
-        amount: dto.amount,
-        currency: dto.currency,
-        description: dto.description ?? null,
-        customerEmail: dto.customerEmail ?? null,
-        status: PaymentStatus.PENDING,
-        attempts: 0,
-        history: [{ status: PaymentStatus.PENDING, at: new Date().toISOString(), note: 'Payment created' }],
-        idempotencyKey: idempotencyKey ?? null,
-      });
+      const payment = await this.insertWithUniqueReference(dto, idempotencyKey);
+      await this.enqueue(payment.id);
       return { payment, replayed: false };
     } catch (err) {
       if (!idempotencyKey || !(err instanceof DuplicateIdempotencyKeyError)) throw err;
@@ -38,6 +38,30 @@ export class PaymentsService {
       if (!winner) throw err; // row vanished between insert and read; should not happen
       return { payment: this.replay(winner, dto), replayed: true };
     }
+  }
+
+  // Collisions on a 60-bit random value are practically impossible, but the unique
+  // index is the guarantee, so a bounded retry covers the rest.
+  private async insertWithUniqueReference(dto: CreatePaymentDto, idempotencyKey?: string): Promise<Payment> {
+    for (let attempt = 1; attempt <= MAX_REFERENCE_ATTEMPTS; attempt++) {
+      try {
+        return await this.repository.create({
+          reference: this.newReference(),
+          amount: dto.amount,
+          currency: dto.currency,
+          description: dto.description ?? null,
+          customerEmail: dto.customerEmail ?? null,
+          status: PaymentStatus.PENDING,
+          attempts: 0,
+          history: [{ status: PaymentStatus.PENDING, at: new Date().toISOString(), note: 'Payment created' }],
+          idempotencyKey: idempotencyKey ?? null,
+        });
+      } catch (err) {
+        if (!(err instanceof DuplicateReferenceError)) throw err;
+      }
+    }
+    // Plain Error: the error handler turns it into a generic 500 without details.
+    throw new Error(`Could not generate a unique payment reference after ${MAX_REFERENCE_ATTEMPTS} attempts`);
   }
 
   async getById(id: string): Promise<Payment> {
@@ -86,14 +110,25 @@ export class PaymentsService {
       const fresh = await this.getById(id);
       throw this.illegalTransition(fresh.status, dto.status);
     }
+    if (dto.status === PaymentStatus.PENDING) await this.enqueue(id);
     return this.getById(id);
+  }
+
+  // The database row is the source of truth; the queue is only a trigger. If Redis is
+  // down the request must still succeed, and the boot-time reconcile in server.ts
+  // re-enqueues every PENDING row, so the payment is picked up on the next start.
+  private async enqueue(paymentId: string): Promise<void> {
+    try {
+      await this.queue.enqueue(paymentId);
+    } catch (err) {
+      this.logger.error({ err, paymentId }, 'Failed to enqueue payment; it stays PENDING until the next reconcile');
+    }
   }
 
   private replay(existing: Payment, dto: CreatePaymentDto): Payment {
     const same =
       existing.amount === dto.amount &&
       existing.currency === dto.currency &&
-      existing.reference === dto.reference &&
       existing.description === (dto.description ?? null) &&
       existing.customerEmail === (dto.customerEmail ?? null);
     if (!same) throw new ConflictError(KEY_REUSED_MESSAGE);

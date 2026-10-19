@@ -27,8 +27,8 @@ export function Arena() {
       <ChaosBanner active={hud.chaos} />
       <ArenaHud hud={hud} />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
-        <ArenaCanvas coins={game.coins} scene={game.scene} />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <ArenaCanvas coins={game.coins} scene={game.scene} summary={`Vault ${hud.vault}, failed ${hud.failed}.`} />
         <div className="flex flex-col gap-4">
           <Card className="flex flex-col gap-2 p-4">
             <div className="flex flex-wrap gap-2">

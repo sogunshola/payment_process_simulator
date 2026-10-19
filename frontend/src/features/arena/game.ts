@@ -88,7 +88,6 @@ const HEALTHY: GatewayConfig = { minLatencyMs: 50, maxLatencyMs: 150, failureRat
 
 interface Run {
   id: string;
-  n: number;
   demo: boolean;
   score: ScoreState;
   roundIdx: number;
@@ -102,7 +101,6 @@ interface Run {
 
 const newRun = (demo: boolean): Run => ({
   id: Math.random().toString(16).slice(2, 8),
-  n: 0,
   demo,
   score: initialScore(),
   roundIdx: -1,
@@ -371,10 +369,8 @@ export class ArenaGame {
     const runId = this.run.id;
     this.spawning = true;
     this.run.lastSpawnAt = Date.now();
-    const n = ++this.run.n;
     try {
       const p = await api.createPayment({
-        reference: `arena-${runId}-${n}`,
         amount: randInt(500, 50000),
         currency: CURRENCIES[randInt(0, CURRENCIES.length - 1)],
         description: 'Chaos Arena',

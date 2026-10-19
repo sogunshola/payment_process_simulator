@@ -27,10 +27,10 @@ describe('toApiError', () => {
 
   it('joins several messages for the same field', () => {
     const e = toApiError(400, backendError({ details: [
-      { field: 'reference', message: 'too long' },
-      { field: 'reference', message: 'must not be empty' },
+      { field: 'description', message: 'too long' },
+      { field: 'description', message: 'must not be empty' },
     ] }));
-    expect(e.fieldErrors).toEqual({ reference: 'too long; must not be empty' });
+    expect(e.fieldErrors).toEqual({ description: 'too long; must not be empty' });
   });
 
   it('keeps an object details as-is with no field errors', () => {
@@ -120,7 +120,7 @@ describe('client', () => {
   it('sends a fresh UUID Idempotency-Key per create', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(202, { id: 'p' })));
     vi.stubGlobal('fetch', fetchMock);
-    const input = { reference: 'r', amount: 100, currency: 'USD' as const };
+    const input = { amount: 100, currency: 'USD' as const };
     await api.createPayment(input);
     await api.createPayment(input);
     const k1 = fetchMock.mock.calls[0][1].headers['Idempotency-Key'];

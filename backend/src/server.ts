@@ -6,7 +6,12 @@ import { createDataSource } from './database/data-source';
 import { createGatewayModule } from './modules/gateway/gateway.module';
 import { createHealthModule } from './modules/health/health.module';
 import { createPaymentsModule } from './modules/payments/payments.module';
-import { createProcessingModule } from './modules/processing/processing.module';
+import {
+  assertRedisReachable,
+  closeWorker,
+  createProcessingModule,
+  reconcileQueue,
+} from './modules/processing/processing.module';
 import { createApp } from './app';
 
 async function main(): Promise<void> {
@@ -29,19 +34,31 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const gatewayModule = createGatewayModule(config.gateway, logger);
-  const { processor } = createProcessingModule(dataSource, gatewayModule.gateway, config.processor, logger);
-
-  // Before listening, so the processor never races requests against rows from a crashed run.
+  // Bounded check (not BullMQ's endless reconnect) so a missing Redis is a clear fatal error.
   try {
-    await processor.recoverStuck();
+    await assertRedisReachable(config.redisUrl);
   } catch (err) {
-    logger.fatal({ err }, 'Recovering stuck payments failed');
+    logger.fatal({ err }, 'Redis is not reachable; start it (docker compose up -d redis) and check REDIS_URL');
+    process.exit(1);
+  }
+
+  const gatewayModule = createGatewayModule(config.gateway, logger);
+  const processing = createProcessingModule(dataSource, gatewayModule.gateway, config, logger);
+
+  // Before listening, so payments whose enqueue failed earlier, or whose job was lost, are queued again.
+  try {
+    await reconcileQueue(processing.repository, processing.queue, logger);
+  } catch (err) {
+    logger.fatal({ err }, 'Reconciling payments with the queue failed');
     process.exit(1);
   }
 
   const app = createApp(
-    [createHealthModule(dataSource), createPaymentsModule(dataSource), gatewayModule],
+    [
+      createHealthModule(dataSource, processing.pingRedis),
+      createPaymentsModule(dataSource, processing.queue, logger),
+      gatewayModule,
+    ],
     logger,
     { apiKey: config.apiKey, corsOrigins: config.corsOrigins, rateLimit: config.rateLimit },
   );
@@ -50,7 +67,10 @@ async function main(): Promise<void> {
   const server = app.listen(config.port);
   server.on('listening', () => {
     logger.info({ port: config.port }, 'Server listening');
-    processor.start();
+    void processing.worker.run().catch((err: unknown) => {
+      logger.fatal({ err }, 'Payment worker failed to start');
+      process.exit(1);
+    });
   });
 
   // e.g. EADDRINUSE: without this the process would crash with a raw stack.
@@ -65,17 +85,16 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down');
 
-    // Must exceed processor.stop(), which may legitimately wait up to 10s for in-flight
-    // payments; with the old 10s timer the force-exit would fire before it finished.
+    // Must exceed the 10s the worker may wait for active jobs below.
     setTimeout(() => {
       logger.error('Shutdown timed out, forcing exit');
       process.exit(1);
     }, 20_000).unref();
 
-    // Stop the processor first so no payment is mid-flight while the DB closes.
-    // stop() never rejects; it gives up waiting after its own timeout.
-    processor
-      .stop()
+    // Stop the worker first so no payment is mid-flight while the DB closes, then the
+    // queue's Redis connections.
+    closeWorker(processing.worker, 10_000, logger)
+      .then(() => processing.close())
       .then(() => {
         // Stop accepting connections; callback fires once in-flight requests finish.
         server.close((closeErr) => {
@@ -95,7 +114,7 @@ async function main(): Promise<void> {
         server.closeIdleConnections();
       })
       .catch((err: unknown) => {
-        logger.error({ err }, 'Error stopping payment processor');
+        logger.error({ err }, 'Error stopping payment worker');
         process.exit(1);
       });
   };

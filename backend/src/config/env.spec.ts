@@ -16,7 +16,8 @@ describe('loadConfig', () => {
       nodeEnv: 'development',
       rateLimit: { windowMs: 60_000, max: 300, createMax: 30 },
       gateway: { minLatencyMs: 100, maxLatencyMs: 800, failureRate: 0.2, declineRate: 0.1, timeoutRate: 0.05 },
-      processor: { gatewayTimeoutMs: 5000, pollIntervalMs: 1000, batchSize: 10, maxAttempts: 5 },
+      processor: { gatewayTimeoutMs: 5000, concurrency: 10, maxAttempts: 5 },
+      redisUrl: 'redis://localhost:6379',
     });
     expect(Object.isFrozen(c)).toBe(true);
   });
@@ -67,8 +68,7 @@ describe('loadConfig', () => {
       GATEWAY_DECLINE_RATE: '0.25',
       GATEWAY_TIMEOUT_RATE: '0.25',
       GATEWAY_TIMEOUT_MS: '200',
-      PROCESSOR_POLL_INTERVAL_MS: '150',
-      PROCESSOR_BATCH_SIZE: '3',
+      PROCESSOR_CONCURRENCY: '3',
       PROCESSOR_MAX_ATTEMPTS: '2',
     });
     expect(c.gateway).toEqual({
@@ -78,7 +78,7 @@ describe('loadConfig', () => {
       declineRate: 0.25,
       timeoutRate: 0.25,
     });
-    expect(c.processor).toEqual({ gatewayTimeoutMs: 200, pollIntervalMs: 150, batchSize: 3, maxAttempts: 2 });
+    expect(c.processor).toEqual({ gatewayTimeoutMs: 200, concurrency: 3, maxAttempts: 2 });
   });
 
   it.each([
@@ -88,12 +88,43 @@ describe('loadConfig', () => {
     ['GATEWAY_MIN_LATENCY_MS', '10001'],
     ['GATEWAY_MAX_LATENCY_MS', '1.5'],
     ['GATEWAY_TIMEOUT_MS', '99'],
-    ['PROCESSOR_POLL_INTERVAL_MS', '60001'],
-    ['PROCESSOR_BATCH_SIZE', '0'],
-    ['PROCESSOR_BATCH_SIZE', '101'],
+    ['PROCESSOR_CONCURRENCY', '0'],
+    ['PROCESSOR_CONCURRENCY', '101'],
+    ['PROCESSOR_CONCURRENCY', '2.5'],
     ['PROCESSOR_MAX_ATTEMPTS', '21'],
   ])('fails on bad %s=%s', (name, value) => {
     expect(() => loadConfig({ ...valid, [name]: value })).toThrow(new RegExp(name));
+  });
+
+  describe('REDIS_URL', () => {
+    it('defaults to localhost', () => {
+      expect(loadConfig(valid).redisUrl).toBe('redis://localhost:6379');
+      expect(loadConfig({ ...valid, REDIS_URL: '' }).redisUrl).toBe('redis://localhost:6379');
+    });
+
+    it.each(['redis://cache:6379', 'rediss://:pw@cache.example.com:6380/1'])('accepts %s', (REDIS_URL) => {
+      expect(loadConfig({ ...valid, REDIS_URL }).redisUrl).toBe(REDIS_URL);
+    });
+
+    it.each(['http://localhost:6379', 'localhost:6379', 'redis://', 'redis://has space'])('rejects %s', (REDIS_URL) => {
+      expect(() => loadConfig({ ...valid, REDIS_URL })).toThrow(/REDIS_URL/);
+    });
+
+    it('never prints the rejected value (it may hold a password)', () => {
+      let message = '';
+      try {
+        loadConfig({ ...valid, REDIS_URL: 'http://user:s3cretpw@cache:6379' });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toMatch(/REDIS_URL/);
+      expect(message).not.toContain('s3cretpw');
+    });
+  });
+
+  it('ignores the removed polling variables and defaults concurrency to 10', () => {
+    const c = loadConfig({ ...valid, PROCESSOR_POLL_INTERVAL_MS: '5', PROCESSOR_BATCH_SIZE: '5' });
+    expect(c.processor).toEqual({ gatewayTimeoutMs: 5000, concurrency: 10, maxAttempts: 5 });
   });
 
   it('fails when the failure rates sum to more than 1', () => {

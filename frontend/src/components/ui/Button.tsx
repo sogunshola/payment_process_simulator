@@ -28,7 +28,7 @@ export function Button({ variant = 'primary', size = 'md', loading, disabled, cl
       {...rest}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
-      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-control font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-control font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {loading && (
         <span

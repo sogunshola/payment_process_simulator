@@ -1,0 +1,6 @@
+# Redis for the payment job queue (BullMQ). The API and worker run on the host: npm run dev in backend/.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'

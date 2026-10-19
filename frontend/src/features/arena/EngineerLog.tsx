@@ -12,7 +12,9 @@ export function EngineerLog({ entries }: { entries: LogEntry[] }) {
     <ol
       aria-label="Engineer log"
       aria-live="polite"
-      className="flex h-64 flex-col gap-1 overflow-y-auto font-mono text-xs"
+      // Scrollable regions need to be focusable, or keyboard users cannot scroll back through the log.
+      tabIndex={0}
+      className="flex h-64 flex-col gap-1 overflow-y-auto rounded-control font-mono text-xs"
     >
       {entries.length === 0 && <li className="text-muted">Nothing yet. Start a run.</li>}
       {entries.map((e) => (

@@ -23,11 +23,11 @@ paths:
   /health:
     get:
       tags: [Health]
-      summary: Liveness and database check
+      summary: Liveness, database and Redis check
       security: []
       responses:
         '200':
-          description: Service and database are up.
+          description: Service and database are up. `redis` is `down` when the job queue is unreachable; payments are still accepted and are queued again on the next start.
           content:
             application/json:
               schema:
@@ -289,6 +289,9 @@ components:
         database:
           type: string
           enum: [up]
+        redis:
+          type: string
+          enum: [up, down]
         timestamp:
           type: string
           format: date-time
@@ -301,13 +304,8 @@ components:
     CreatePayment:
       type: object
       additionalProperties: false
-      required: [reference, amount, currency]
+      required: [amount, currency]
       properties:
-        reference:
-          type: string
-          minLength: 1
-          maxLength: 64
-          description: Caller's reference. Must not be blank.
         amount:
           type: integer
           minimum: 1
@@ -369,6 +367,7 @@ components:
           format: uuid
         reference:
           type: string
+          description: Server-generated (`PAY-` plus 12 characters), unique across payments. Clients must not send it; a request body containing `reference` is rejected with 400.
         amount:
           type: integer
           description: Minor units.

@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsNumber,
   IsString,
+  Matches,
   Max,
   Min,
   MinLength,
@@ -33,10 +34,10 @@ export interface AppConfig {
   };
   readonly processor: {
     readonly gatewayTimeoutMs: number;
-    readonly pollIntervalMs: number;
-    readonly batchSize: number;
+    readonly concurrency: number;
     readonly maxAttempts: number;
   };
+  readonly redisUrl: string;
 }
 
 // Must equal the API_KEY value in .env.example (keep them in sync). Production refuses to
@@ -130,23 +131,24 @@ class EnvVars {
   @Max(60_000)
   GATEWAY_TIMEOUT_MS!: number;
 
-  @Transform(numberOr(1000))
-  @IsInt()
-  @Min(100)
-  @Max(60_000)
-  PROCESSOR_POLL_INTERVAL_MS!: number;
-
+  // Payments charged in parallel by this process.
   @Transform(numberOr(10))
   @IsInt()
   @Min(1)
   @Max(100)
-  PROCESSOR_BATCH_SIZE!: number;
+  PROCESSOR_CONCURRENCY!: number;
 
   @Transform(numberOr(5))
   @IsInt()
   @Min(1)
   @Max(20)
   PROCESSOR_MAX_ATTEMPTS!: number;
+
+  // Message names the variable only: the URL may carry a password.
+  @Transform(({ value }: { value: unknown }) => (isBlank(value) ? 'redis://localhost:6379' : value))
+  @IsString()
+  @Matches(/^rediss?:\/\/\S+$/, { message: 'REDIS_URL must be a redis:// or rediss:// URL' })
+  REDIS_URL!: string;
 }
 
 function parseOrigins(raw: string): { origins: string[]; invalid: string[] } {
@@ -188,9 +190,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     GATEWAY_DECLINE_RATE: env.GATEWAY_DECLINE_RATE,
     GATEWAY_TIMEOUT_RATE: env.GATEWAY_TIMEOUT_RATE,
     GATEWAY_TIMEOUT_MS: env.GATEWAY_TIMEOUT_MS,
-    PROCESSOR_POLL_INTERVAL_MS: env.PROCESSOR_POLL_INTERVAL_MS,
-    PROCESSOR_BATCH_SIZE: env.PROCESSOR_BATCH_SIZE,
+    PROCESSOR_CONCURRENCY: env.PROCESSOR_CONCURRENCY,
     PROCESSOR_MAX_ATTEMPTS: env.PROCESSOR_MAX_ATTEMPTS,
+    REDIS_URL: env.REDIS_URL,
   });
 
   const problems: string[] = [];
@@ -252,9 +254,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }),
     processor: Object.freeze({
       gatewayTimeoutMs: vars.GATEWAY_TIMEOUT_MS,
-      pollIntervalMs: vars.PROCESSOR_POLL_INTERVAL_MS,
-      batchSize: vars.PROCESSOR_BATCH_SIZE,
+      concurrency: vars.PROCESSOR_CONCURRENCY,
       maxAttempts: vars.PROCESSOR_MAX_ATTEMPTS,
     }),
+    redisUrl: vars.REDIS_URL,
   });
 }

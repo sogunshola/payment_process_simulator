@@ -4,25 +4,28 @@ import { createLogger } from '../src/common/logger';
 import { loadConfig } from '../src/config/env';
 import { createDataSource } from '../src/database/data-source';
 import { createHealthModule } from '../src/modules/health/health.module';
+import { REFERENCE_PATTERN } from '../src/modules/payments/payment-reference';
 import { PaymentStatus } from '../src/modules/payments/payment-status';
 import { createPaymentsModule } from '../src/modules/payments/payments.module';
 import { PaymentsRepository } from '../src/modules/payments/payments.repository';
-import { appOptions, authed, TEST_API_KEY } from './support';
+import { appOptions, authed, createFakeQueue, TEST_API_KEY } from './support';
 
 const config = loadConfig({ API_KEY: TEST_API_KEY, DB_PATH: ':memory:', NODE_ENV: 'test' });
 const logger = createLogger(config);
-const valid = { reference: 'inv-1', amount: 5000, currency: 'NGN' };
+const valid = { amount: 5000, currency: 'NGN' };
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
 
 describe('payments (e2e)', () => {
   let dataSource: DataSource;
   let app: ReturnType<typeof createApp>;
   let repo: PaymentsRepository;
+  let queue: ReturnType<typeof createFakeQueue>;
 
   beforeEach(async () => {
     dataSource = createDataSource(config);
     await dataSource.initialize();
-    app = createApp([createHealthModule(dataSource), createPaymentsModule(dataSource)], logger, appOptions);
+    queue = createFakeQueue();
+    app = createApp([createHealthModule(dataSource), createPaymentsModule(dataSource, queue, logger)], logger, appOptions);
     repo = new PaymentsRepository(dataSource);
   });
 
@@ -58,8 +61,17 @@ describe('payments (e2e)', () => {
       expect(res.body.history[0]).toMatchObject({ status: 'PENDING', note: 'Payment created' });
     });
 
+    it('generates a unique server-side reference for each payment', async () => {
+      const a = await post(valid).expect(202);
+      const b = await post(valid).expect(202);
+      expect(a.body.reference).toMatch(REFERENCE_PATTERN);
+      expect(b.body.reference).toMatch(REFERENCE_PATTERN);
+      expect(a.body.reference).not.toBe(b.body.reference);
+    });
+
     const bad: Array<[string, unknown, string]> = [
-      ['missing reference', { amount: 5000, currency: 'NGN' }, 'reference'],
+      ['missing amount', { currency: 'NGN' }, 'amount'],
+      ['client-supplied reference', { ...valid, reference: 'inv-1' }, 'reference'],
       ['float amount', { ...valid, amount: 100.5 }, 'amount'],
       ['negative amount', { ...valid, amount: -5 }, 'amount'],
       ['zero amount', { ...valid, amount: 0 }, 'amount'],
@@ -69,8 +81,6 @@ describe('payments (e2e)', () => {
       ['unsupported currency', { ...valid, currency: 'JPY' }, 'currency'],
       ['lowercase currency', { ...valid, currency: 'usd' }, 'currency'],
       ['bad email', { ...valid, customerEmail: 'nope' }, 'customerEmail'],
-      ['reference too long', { ...valid, reference: 'x'.repeat(65) }, 'reference'],
-      ['whitespace reference', { ...valid, reference: '   ' }, 'reference'],
     ];
     it.each(bad)('rejects %s with 400', async (_name, body, field) => {
       const res = await post(body).expect(400);
@@ -98,6 +108,20 @@ describe('payments (e2e)', () => {
       await post(valid, 'key-2').expect(202);
       const res = await post({ ...valid, amount: 6000 }, 'key-2').expect(409);
       expect(res.body.message).toBe('Idempotency-Key has already been used with a different request');
+    });
+
+    it('enqueues a new payment once, and not again on a replay', async () => {
+      const first = await post(valid, 'q-key').expect(202);
+      await post(valid, 'q-key').expect(200);
+      expect(queue.enqueued).toEqual([first.body.id]);
+    });
+
+    it('still answers 202 and keeps the PENDING row when the queue is down', async () => {
+      queue.fail = true;
+      const res = await post(valid).expect(202);
+      expect(res.body.status).toBe('PENDING');
+      expect((await repo.findById(res.body.id))?.status).toBe(PaymentStatus.PENDING);
+      expect(queue.enqueued).toEqual([]);
     });
 
     it('handles two parallel requests with the same key', async () => {
@@ -129,7 +153,7 @@ describe('payments (e2e)', () => {
 
   describe('GET /payments', () => {
     it('paginates newest first with a total', async () => {
-      for (let i = 0; i < 5; i++) await post({ ...valid, reference: `r-${i}` }).expect(202);
+      for (let i = 0; i < 5; i++) await post(valid).expect(202);
       const p1 = await authed(app).get('/payments?page=1&limit=2').expect(200);
       const p3 = await authed(app).get('/payments?page=3&limit=2').expect(200);
       const p2 = await authed(app).get('/payments?page=2&limit=2').expect(200);
@@ -232,9 +256,18 @@ describe('payments (e2e)', () => {
 
     it('PROCESSING -> PENDING sets nextAttemptAt', async () => {
       const id = await createProcessing();
+      queue.enqueued.length = 0; // ignore the enqueue from the create
       const res = await authed(app).patch(`/payments/${id}/status`).send({ status: 'PENDING' }).expect(200);
       expect(res.body.status).toBe('PENDING');
       expect(res.body.nextAttemptAt).toEqual(expect.any(String));
+      expect(queue.enqueued).toEqual([id]);
+    });
+
+    it('does not enqueue after a cancel', async () => {
+      const created = await post(valid).expect(202);
+      queue.enqueued.length = 0;
+      await authed(app).patch(`/payments/${created.body.id}/status`).send({ status: 'CANCELLED' }).expect(200);
+      expect(queue.enqueued).toEqual([]);
     });
   });
 

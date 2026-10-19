@@ -44,7 +44,6 @@ export interface PaymentListParams {
 export type PaymentStats = Record<PaymentStatus, number> & { total: number };
 
 export interface CreatePaymentInput {
-  reference: string;
   amount: number;
   currency: Currency;
   description?: string;

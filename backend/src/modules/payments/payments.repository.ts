@@ -1,4 +1,4 @@
-import { DataSource, IsNull, LessThanOrEqual, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import { Payment } from './payment.entity';
 import { PaymentStatus } from './payment-status';
 
@@ -10,6 +10,14 @@ export class DuplicateIdempotencyKeyError extends Error {
   constructor() {
     super('Idempotency key already exists');
     this.name = 'DuplicateIdempotencyKeyError';
+  }
+}
+
+/** Thrown when an insert hits the reference unique index (generated value collided). */
+export class DuplicateReferenceError extends Error {
+  constructor() {
+    super('Payment reference already exists');
+    this.name = 'DuplicateReferenceError';
   }
 }
 
@@ -33,14 +41,15 @@ export class PaymentsRepository {
     try {
       return await this.repo.save(this.repo.create(data));
     } catch (err) {
-      // idempotencyKey is the only unique column besides the generated id, so a
-      // unique violation with a key set means another request won the race.
+      // Two unique columns exist, so tell them apart by the driver message
+      // ("UNIQUE constraint failed: payments.<column>").
       if (
-        data.idempotencyKey &&
         err instanceof QueryFailedError &&
         (err.driverError as { code?: string } | undefined)?.code === 'SQLITE_CONSTRAINT_UNIQUE'
       ) {
-        throw new DuplicateIdempotencyKeyError();
+        const message = String((err.driverError as { message?: string }).message);
+        if (message.includes('payments.idempotencyKey')) throw new DuplicateIdempotencyKeyError();
+        if (message.includes('payments.reference')) throw new DuplicateReferenceError();
       }
       throw err;
     }
@@ -52,23 +61,6 @@ export class PaymentsRepository {
 
   findByIdempotencyKey(key: string): Promise<Payment | null> {
     return this.repo.findOneBy({ idempotencyKey: key });
-  }
-
-  /**
-   * PENDING payments whose retry time has arrived (or that were never scheduled).
-   * Uses find operators rather than a raw query so TypeORM converts the Date to the
-   * same stored format as the column; SQLite sorts NULL first, so fresh payments
-   * come before retries, and createdAt keeps the order fair among equals.
-   */
-  findDue(now: Date, limit: number): Promise<Payment[]> {
-    return this.repo.find({
-      where: [
-        { status: PaymentStatus.PENDING, nextAttemptAt: IsNull() },
-        { status: PaymentStatus.PENDING, nextAttemptAt: LessThanOrEqual(now) },
-      ],
-      order: { nextAttemptAt: 'ASC', createdAt: 'ASC', id: 'ASC' },
-      take: limit,
-    });
   }
 
   findByStatus(status: PaymentStatus): Promise<Payment[]> {

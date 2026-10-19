@@ -9,13 +9,13 @@ import { createDataSource } from '../src/database/data-source';
 import { createGatewayModule } from '../src/modules/gateway/gateway.module';
 import { createHealthModule } from '../src/modules/health/health.module';
 import { createPaymentsModule } from '../src/modules/payments/payments.module';
-import { appOptions, authed, TEST_API_KEY } from './support';
+import { appOptions, authed, createFakeQueue, TEST_API_KEY } from './support';
 
 const config = loadConfig({ API_KEY: TEST_API_KEY, DB_PATH: ':memory:', NODE_ENV: 'test' });
 const logger = createLogger(config);
 const SHAPE = ['details', 'error', 'message', 'path', 'requestId', 'statusCode', 'timestamp'];
 const ALLOWED_ORIGIN = 'http://localhost:5173';
-const valid = { reference: 'inv-1', amount: 5000, currency: 'NGN' };
+const valid = { amount: 5000, currency: 'NGN' };
 
 describe('security (e2e)', () => {
   let dataSource: DataSource;
@@ -29,9 +29,10 @@ describe('security (e2e)', () => {
     if (dataSource.isInitialized) await dataSource.destroy();
   });
 
+  const queue = createFakeQueue();
   const build = (options: AppOptions = appOptions) =>
     createApp(
-      [createHealthModule(dataSource), createPaymentsModule(dataSource), createGatewayModule(config.gateway, logger)],
+      [createHealthModule(dataSource), createPaymentsModule(dataSource, queue, logger), createGatewayModule(config.gateway, logger)],
       logger,
       options,
     );

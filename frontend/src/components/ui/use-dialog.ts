@@ -34,7 +34,11 @@ export function useDialog(open: boolean, onClose: () => void) {
       if (items.length === 0) return;
       const first = items[0];
       const last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      // Focus can end up outside after a click on the backdrop; pull it back in.
+      if (!ref.current?.contains(document.activeElement) || document.activeElement === ref.current) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
@@ -45,7 +49,9 @@ export function useDialog(open: boolean, onClose: () => void) {
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      opener?.focus();
+      // The opener can be gone (e.g. the "Create your first payment" button vanishes once a payment exists).
+      if (opener?.isConnected) opener.focus();
+      else document.getElementById('main-content')?.focus();
     };
   }, [open]);
 

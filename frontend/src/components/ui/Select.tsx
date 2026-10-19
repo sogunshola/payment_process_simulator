@@ -22,7 +22,7 @@ export function Select({ label, hint, error, id, className = '', children, ...re
         id={selectId}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
-        className={`h-10 rounded-control border bg-surface-strong px-3 text-sm text-fg ${error ? 'border-status-failed' : 'border-line'} ${className}`}
+        className={`h-10 rounded-control border bg-surface-strong px-3 text-sm text-fg ${error ? 'border-status-failed' : 'border-control-border'} ${className}`}
       >
         {children}
       </select>

@@ -5,6 +5,8 @@ import type { PaymentStatus } from '../../lib/api/types';
 interface Props {
   coins: CoinMap;
   scene: { intensity: number };
+  /** Short text equivalent of what the canvas shows right now. */
+  summary: string;
 }
 
 const STATUS_VARS: Record<PaymentStatus, string> = {
@@ -30,7 +32,7 @@ function readColors() {
   };
 }
 
-export function ArenaCanvas({ coins, scene }: Props) {
+export function ArenaCanvas({ coins, scene, summary }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -142,7 +144,7 @@ export function ArenaCanvas({ coins, scene }: Props) {
 
   return (
     <div ref={wrapRef} className="h-[360px] w-full overflow-hidden rounded-card border border-line bg-surface backdrop-blur-md sm:h-[400px]">
-      <canvas ref={canvasRef} role="img" aria-label="Payment pipeline: coins travel from intake through the gateway to the success vault or the failed pile. Events are listed in the engineer log." className="block size-full" />
+      <canvas ref={canvasRef} role="img" aria-label={`Payment pipeline: coins travel from intake through the gateway to the success vault or the failed pile. ${summary} Events are listed in the engineer log.`} className="block size-full" />
     </div>
   );
 }

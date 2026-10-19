@@ -12,3 +12,17 @@ export const appOptions: AppOptions = {
 
 /** supertest agent that sends the test API key on every request. */
 export const authed = (app: Parameters<typeof request>[0]) => request.agent(app).set('X-API-Key', TEST_API_KEY);
+
+/** In-memory stand-in for the Redis-backed queue; `fail` makes enqueue throw like a Redis outage. */
+export function createFakeQueue() {
+  const queue = {
+    enqueued: [] as string[],
+    fail: false,
+    enqueue(paymentId: string): Promise<void> {
+      if (queue.fail) return Promise.reject(new Error('redis down'));
+      queue.enqueued.push(paymentId);
+      return Promise.resolve();
+    },
+  };
+  return queue;
+}

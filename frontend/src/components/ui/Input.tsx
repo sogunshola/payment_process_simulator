@@ -22,7 +22,7 @@ export function Input({ label, hint, error, id, className = '', ...rest }: Props
         id={inputId}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
-        className={`h-10 rounded-control border bg-surface-strong px-3 text-sm text-fg placeholder:text-muted ${error ? 'border-status-failed' : 'border-line'} ${className}`}
+        className={`h-10 rounded-control border bg-surface-strong px-3 text-sm text-fg placeholder:text-muted ${error ? 'border-status-failed' : 'border-control-border'} ${className}`}
       />
       {hint && (
         <p id={hintId} className="text-xs text-muted">

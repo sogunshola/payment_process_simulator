@@ -15,7 +15,8 @@ export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'varchar', length: 64 })
+  // Server-generated; unique index is the real uniqueness guarantee.
+  @Column({ type: 'varchar', length: 64, unique: true })
   reference!: string;
 
   // Integer minor units (e.g. kobo/cents). Never a float.
