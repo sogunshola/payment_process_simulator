@@ -87,3 +87,35 @@ Test paths are relative to `frontend/`.
 - **Dialog behaviour** (focus trap, Escape, focus restore) and the toast live region are untested.
 - **API key in `sessionStorage` is readable by any XSS.** Accepted risk for a demo; the key is never put in a URL or logged.
 
+## Arena (Chaos Arena game)
+
+Test paths are relative to `frontend/`.
+
+| Failure point | What happens | How it is handled | Test that proves it |
+| --- | --- | --- | --- |
+| `POST /payments` rate limit (30/min per IP) returns 429 | Intake would be rejected; retrying would make it worse | Base spawn interval is 2.5 s (24/min). On 429 the spawn is skipped, the interval doubles for 10 s, and "Intake throttled by API (429)" is logged. No immediate retry | `src/features/arena/game.test.ts` › "on a 429 logs it, skips the spawn and doubles the interval, without retrying at once" |
+| Cancel races the processor (`PATCH` returns 409) | The payment left PENDING before the cancel landed | Logged as "too late, processor grabbed it", not an error toast; the other cancels in the batch still go through (`Promise.allSettled`) | `src/features/arena/game.test.ts` › "logs a 409 on cancel as "too late"" |
+| Cancel power with nothing doomed | A wasted cooldown | Logs "No doomed payments", no request, no cooldown | `src/features/arena/game.test.ts` › "does not use the cancel power or start a cooldown when nothing is doomed" |
+| Snapshot `GET /gateway/config` fails at start | Starting anyway could leave a chaos config with no way back | The run does not start; error toast and log; no PUT is sent | `src/features/arena/Arena.test.tsx` › "does not start, and changes nothing, when the snapshot GET fails" |
+| Player leaves the route mid-run | Backend keeps the chaos config for everyone | Unmount restores the snapshot with a PUT | `src/features/arena/Arena.test.tsx` › "restores the snapshot when the route is left" |
+| Tab closed or reloaded mid-run | Same | `pagehide` sends a `keepalive` PUT of the snapshot | `src/features/arena/Arena.test.tsx` › "sends a keepalive PUT with the snapshot on pagehide" |
+| Tab killed hard, or the unload PUT is lost | Backend keeps the chaos config | The snapshot stays in `sessionStorage`; the next Arena mount in that tab restores it and logs it | `src/features/arena/Arena.test.tsx` › "restores a stale snapshot left in sessionStorage on mount" |
+| Reset while chaos is active | Backend keeps the chaos config | Reset restores the snapshot and the banner disappears | `src/features/arena/Arena.test.tsx` › "shows the chaos banner while a run is active and restores on reset" |
+| Round timing: pause, resume, stop | Rounds could fire during a pause or after stop | Remaining time is kept on pause; stop cancels the timer | `src/features/arena/rounds.test.ts` (pause/resume, stop, order, compressed duration) |
+| Coin missing from the newest-100 list | Its state would be lost | The last known state is kept; a run creates at most ~90 payments so this should not happen | `src/features/arena/engine.test.ts` › "keeps the last known state of a tracked id missing from the response" |
+| SLA breach, combo and star rules | Wrong scoring or an unfair early end | Pure functions, covered by edge cases (warming up, window of 20, 10 s continuous, recovery) | `src/features/arena/scoring.test.ts` |
+
+### Arena: not covered by automated tests
+
+- **Absolute API URL makes the keepalive PUT cross-origin.** Browsers may refuse a keepalive request that needs a CORS preflight, so the unload restore may not be sent. Only the default same-origin `/api` proxy is expected to work. The stale snapshot is the fallback. Untested.
+- **The global gateway config affects every client and tab during a run.** Another operator sees the chaos config. Not tested; only the warning banner addresses it.
+- **Two Arena tabs at once.** Each holds its own snapshot; the second may snapshot the first one's chaos config and "restore" to it. Untested and not handled.
+- **Backend restart loses the gateway config (in memory).** The snapshot restore still applies on the next visit, but a restart mid-run is not tested.
+- **Coins beyond the newest 100** are not tracked by design (see above); no test with more than 100 payments.
+- **Failover, Slow intake and round-start-during-failover interplay** (failover end reapplies the current round, pause cancels it) have no automated test.
+- **Auto-demo script** is not tested; only checked by reading the code. About 30 s means some coins are still in flight at the end.
+- **Canvas drawing, `devicePixelRatio`, `ResizeObserver` and reduced motion in the renderer.** jsdom has no 2D context. Only the pure movement step (`stepCoins`, including the reduced-motion snap) is tested.
+- **401 during a run** resets the run with a toast. Untested.
+- **Best scores in `localStorage`** (corrupt or blocked storage) are guarded by try/catch but untested.
+- **Polling stops at run end**, so coins in flight when a run ends stop updating their status on screen.
+

@@ -70,6 +70,8 @@ npm run dev     # http://localhost:5173, needs the backend running on :3000
 
 Open **Settings** (top right) and paste the backend `API_KEY`. The default API URL `/api` goes through the Vite dev proxy to `http://localhost:3000`, so CORS is not involved. An absolute URL talks to the backend directly and needs `CORS_ORIGINS=http://localhost:5173`. Settings are kept in `sessionStorage`, so they last only for the browser tab session.
 
+**Chaos Arena** (`/arena`) is a small game on top of the real API: you keep a payment pipeline alive while four rounds change the simulated gateway config. It creates real payments (about 24/min, under the create rate limit) and temporarily changes the global gateway config; the original config is restored on reset, pause, run end, leaving the page and page unload. Try **Auto-demo** for a ~30 s scripted run.
+
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Dev server with the `/api` proxy |

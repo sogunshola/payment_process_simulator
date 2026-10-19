@@ -18,7 +18,7 @@ function joinUrl(base: string, path: string): string {
 async function request<T>(
   method: string,
   path: string,
-  opts: { body?: unknown; headers?: Record<string, string>; auth?: boolean } = {},
+  opts: { body?: unknown; headers?: Record<string, string>; auth?: boolean; keepalive?: boolean } = {},
 ): Promise<T> {
   const { apiUrl, apiKey } = getSettings();
   const headers: Record<string, string> = { Accept: 'application/json', ...opts.headers };
@@ -31,6 +31,7 @@ async function request<T>(
       method,
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      keepalive: opts.keepalive,
     });
   } catch {
     throw toApiError(0, null);
@@ -74,8 +75,10 @@ export const api = {
   updatePaymentStatus: (id: string, input: UpdateStatusInput) =>
     request<Payment>('PATCH', `/payments/${encodeURIComponent(id)}/status`, { body: input }),
   getGatewayConfig: () => request<GatewayConfig>('GET', '/gateway/config'),
-  updateGatewayConfig: (input: GatewayConfig) =>
-    request<GatewayConfig>('PUT', '/gateway/config', { body: input }),
+  // keepalive lets the request outlive the page (used by the Arena on pagehide).
+  // It works with the default same-origin `/api` proxy because no CORS preflight is needed.
+  updateGatewayConfig: (input: GatewayConfig, opts: { keepalive?: boolean } = {}) =>
+    request<GatewayConfig>('PUT', '/gateway/config', { body: input, keepalive: opts.keepalive }),
 };
 
 export { ApiError };
