@@ -39,21 +39,37 @@ stateDiagram-v2
 
 ## Quick start
 
-Prerequisites: Node.js >= 20 and Redis (the payment job queue). Start Redis with either:
+### Local (three commands)
+
+From the repo root, with the Node version in `.nvmrc` (22) and Docker for Redis:
 
 ```bash
-docker compose up -d redis      # from the repo root, uses docker-compose.yml
-brew services start redis       # or a local install
+npm run setup               # installs root, backend and frontend; creates backend/.env if missing
+docker compose up -d redis  # Redis for the payment job queue
+npm run dev                 # backend + frontend together
 ```
 
-The service refuses to start if Redis is unreachable (`REDIS_URL`, default `redis://localhost:6379`).
+UI: http://localhost:5173. API: http://localhost:3000 (Swagger at `/docs/`). Open **Settings** in the UI and paste the `API_KEY` from `backend/.env`. The default is a public placeholder; change it. Redis can also be a local install (`brew services start redis`); the service refuses to start if `REDIS_URL` (default `redis://localhost:6379`) is unreachable.
+
+### Docker (one command)
 
 ```bash
-cd backend
-npm install
-cp .env.example .env     # then set API_KEY to your own secret (min 16 chars)
-npm run dev
+docker compose up --build
 ```
+
+UI: http://localhost:8080 (nginx serves the app and proxies `/api` to the backend). The API is also published on http://localhost:3000, Swagger at `/docs/`. In **Settings** paste the API key, `replace-me-with-a-long-random-secret` unless you set `API_KEY` in a root `.env` (see `.env.example`).
+
+- The backend container runs with `NODE_ENV=development` because production mode turns off schema sync and there are no migrations yet (see Known limitations). Only use the default key locally.
+- Data lives in named volumes (SQLite and Redis). `docker compose down -v` resets it.
+- Ports are configurable with `FRONTEND_PORT`, `BACKEND_PORT` and `REDIS_PORT`.
+
+### Tests and CI
+
+`npm test` at the root runs the backend and frontend suites (no Redis needed). `npm run lint` and `npm run build` run both projects too. GitHub Actions (`.github/workflows/ci.yml`) runs lint, build, tests and `npm audit --omit=dev --audit-level=high` for both on every push and pull request.
+
+### Backend commands
+
+Run these from `backend/`.
 
 | Command | Purpose |
 | --- | --- |
@@ -72,11 +88,7 @@ Interactive API docs (Swagger UI, no key needed): `http://localhost:3000/docs/`.
 
 Vite + React 18 + TypeScript + Tailwind v4 + TanStack Query, in `frontend/`.
 
-```bash
-cd frontend
-npm install
-npm run dev     # http://localhost:5173, needs the backend running on :3000
-```
+Started by `npm run dev` at the root, or on its own (`npm run dev` in `frontend/`, needs the backend on :3000).
 
 Open **Settings** (top right) and paste the backend `API_KEY`. The default API URL `/api` goes through the Vite dev proxy to `http://localhost:3000`, so CORS is not involved. An absolute URL talks to the backend directly and needs `CORS_ORIGINS=http://localhost:5173`. Settings are kept in `sessionStorage`, so they last only for the browser tab session.
 

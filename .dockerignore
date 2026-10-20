@@ -1,0 +1,14 @@
+# Both images build from the repo root; keep host artifacts out of the context.
+.git
+.github
+**/node_modules
+**/dist
+**/.env
+*.sqlite
+**/coverage
+**/test-results
+**/playwright-report
+dump.rdb
+docs/media
+docs/ai-transcript
+**/.DS_Store

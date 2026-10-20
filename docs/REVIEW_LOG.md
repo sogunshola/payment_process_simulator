@@ -14,6 +14,7 @@ A record of AI-assisted implementation work, the human decisions made during rev
 | 3 | Frontend polish and end-to-end coverage | Reviewed and approved |
 | 4 | Server-generated payment references | Reviewed and approved |
 | 5 | BullMQ payment processing migration | Reviewed and approved |
+| 6 | Reproducible setup (Docker, scripts, CI) | Pending human review |
 
 ---
 
@@ -202,6 +203,28 @@ The final design separates responsibilities appropriately:
 - **Database:** Durable payment records, consistency constraints, and state/version validation.
 
 **Status:** Reviewed and approved.
+
+---
+
+## 6. Reproducible setup
+
+**Request**
+
+Make the project reproducible: one command to run everything in Docker, three commands for local development, and CI.
+
+**AI-produced work**
+- Added `backend/Dockerfile` (multi-stage, non-root, `/data` volume, `/health` healthcheck) and `frontend/Dockerfile` with nginx (`/api` proxy, SPA fallback).
+- Extended `docker-compose.yml` with `redis` (AOF, healthcheck), `backend` and `frontend`; `docker compose up -d redis` still works.
+- Added a root `package.json` (`setup`, `dev`, `test`, `lint`, `build`), `.nvmrc`, `.dockerignore`, `.env.example` and `.github/workflows/ci.yml`.
+- Rewrote the README Quick start; added failure points to `docs/FAILURE_MODES.md`.
+
+**Decisions**
+- Compose runs the backend with `NODE_ENV=development` because production disables schema sync and there are no migrations. Backend source was not changed.
+- Both images build from the repo root because the API reads `docs/openapi.yaml` from outside `backend/`.
+- Removed the accidentally committed `dump.rdb` and gitignored it; Redis data now lives in a named volume.
+- The default compose API key is the public placeholder, documented as local-only.
+
+**Review status:** pending human review.
 
 ---
 

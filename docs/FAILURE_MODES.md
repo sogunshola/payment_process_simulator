@@ -143,3 +143,13 @@ Test paths are relative to `frontend/`.
 - **Best scores in `localStorage`** (corrupt or blocked storage) are guarded by try/catch but untested.
 - **Polling stops at run end**, so coins in flight when a run ends stop updating their status on screen.
 
+## Reproducible setup (Docker, CI)
+
+None of these have automated tests; they were checked by hand when the setup was added (see `docs/REVIEW_LOG.md`).
+
+- **Backend starts before Redis is ready.** The service exits 1 if Redis is unreachable at boot. Compose gives Redis a `redis-cli ping` healthcheck and the backend `depends_on: condition: service_healthy`; `restart: unless-stopped` covers a later Redis outage that ends in an exit. The frontend waits for the backend's `/health` the same way. Checked by hand, no automated test.
+- **SQLite volume permissions for the non-root user.** The image creates `/data` owned by `node` before declaring the volume, so a new named volume is writable. A bind mount owned by another user would fail at database init (fatal log, exit 1). Named volume checked by hand; bind mount untested.
+- **Default compose API key is the public placeholder.** Anyone who can reach the published ports can use the API. Only safe on a local machine; set `API_KEY` in a root `.env` otherwise. The backend also runs with `NODE_ENV=development` there, so the production placeholder check does not apply. Not enforced.
+- **Behind nginx every client shares one rate-limit bucket.** `trust proxy` is not set, so the backend sees the nginx container's IP for requests that come through the UI. Not handled; see Known limitations in the README.
+- **Compose runs without migrations.** Because production mode has no tables on a fresh DB, compose uses `NODE_ENV=development` (schema sync). Same limitation as above.
+- **CI has never run on GitHub.** The workflow YAML parses and its commands pass locally; the hosted run is unverified.
