@@ -15,8 +15,10 @@ backend/src
   common/          logger, typed errors, shared middleware
   modules/<name>/  entity, dtos, repository, service, controller, routes, module
 backend/test       e2e tests (supertest, in-memory SQLite)
-docs/              openapi.yaml, FAILURE_MODES.md
+docs/              openapi.yaml, FAILURE_MODES.md, REVIEW_LOG.md, ai-transcript/
 ```
+
+AI use is documented in `docs/`: [ai-transcript/ai-transcript.md](docs/ai-transcript/ai-transcript.md) holds the prompts and response summaries, and [REVIEW_LOG.md](docs/REVIEW_LOG.md) records what the AI produced and what was changed or rejected.
 
 Module convention: controller, service, repository. Only repositories touch TypeORM. `<name>.module.ts` wires the pieces by hand; there is no DI framework. Modules: `health`, `payments`, `gateway` (simulated provider and its chaos config), `processing` (BullMQ queue and worker, no HTTP surface).
 

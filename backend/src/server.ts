@@ -1,18 +1,18 @@
-import 'reflect-metadata';
-import 'dotenv/config';
-import { loadConfig } from './config/env';
-import { createLogger } from './common/logger';
-import { createDataSource } from './database/data-source';
-import { createGatewayModule } from './modules/gateway/gateway.module';
-import { createHealthModule } from './modules/health/health.module';
-import { createPaymentsModule } from './modules/payments/payments.module';
+import "reflect-metadata";
+import "dotenv/config";
+import { loadConfig } from "./config/env";
+import { createLogger } from "./common/logger";
+import { createDataSource } from "./database/data-source";
+import { createGatewayModule } from "./modules/gateway/gateway.module";
+import { createHealthModule } from "./modules/health/health.module";
+import { createPaymentsModule } from "./modules/payments/payments.module";
 import {
   assertRedisReachable,
   closeWorker,
   createProcessingModule,
   reconcileQueue,
-} from './modules/processing/processing.module';
-import { createApp } from './app';
+} from "./modules/processing/processing.module";
+import { createApp } from "./app";
 
 async function main(): Promise<void> {
   let config;
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   try {
     await dataSource.initialize();
   } catch (err) {
-    logger.fatal({ err }, 'Database initialization failed');
+    logger.fatal({ err }, "Database initialization failed");
     process.exit(1);
   }
 
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   try {
     await assertRedisReachable(config.redisUrl);
   } catch (err) {
-    logger.fatal({ err }, 'Redis is not reachable; start it (docker compose up -d redis) and check REDIS_URL');
+    logger.fatal({ err }, "Redis is not reachable; start it (docker compose up -d redis) and check REDIS_URL");
     process.exit(1);
   }
 
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   try {
     await reconcileQueue(processing.repository, processing.queue, logger);
   } catch (err) {
-    logger.fatal({ err }, 'Reconciling payments with the queue failed');
+    logger.fatal({ err }, "Reconciling payments with the queue failed");
     process.exit(1);
   }
 
@@ -65,17 +65,17 @@ async function main(): Promise<void> {
   // No listen callback: Express 5 also invokes it with the error on EADDRINUSE,
   // which would log a false "listening" line.
   const server = app.listen(config.port);
-  server.on('listening', () => {
-    logger.info({ port: config.port }, 'Server listening');
+  server.on("listening", () => {
+    logger.info({ port: config.port }, "Server listening");
     void processing.worker.run().catch((err: unknown) => {
-      logger.fatal({ err }, 'Payment worker failed to start');
+      logger.fatal({ err }, "Payment worker failed to start");
       process.exit(1);
     });
   });
 
   // e.g. EADDRINUSE: without this the process would crash with a raw stack.
-  server.on('error', (err) => {
-    logger.fatal({ err }, 'Server failed to start');
+  server.on("error", (err) => {
+    logger.fatal({ err }, "Server failed to start");
     process.exit(1);
   });
 
@@ -83,11 +83,11 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     if (shuttingDown) return; // a second signal must not re-run teardown
     shuttingDown = true;
-    logger.info({ signal }, 'Shutting down');
+    logger.info({ signal }, "Shutting down");
 
     // Must exceed the 10s the worker may wait for active jobs below.
     setTimeout(() => {
-      logger.error('Shutdown timed out, forcing exit');
+      logger.error("Shutdown timed out, forcing exit");
       process.exit(1);
     }, 20_000).unref();
 
@@ -98,15 +98,15 @@ async function main(): Promise<void> {
       .then(() => {
         // Stop accepting connections; callback fires once in-flight requests finish.
         server.close((closeErr) => {
-          if (closeErr) logger.error({ err: closeErr }, 'Error closing HTTP server');
+          if (closeErr) logger.error({ err: closeErr }, "Error closing HTTP server");
           dataSource
             .destroy()
             .then(() => {
-              logger.info('Shutdown complete');
+              logger.info("Shutdown complete");
               process.exit(0);
             })
             .catch((err: unknown) => {
-              logger.error({ err }, 'Error closing database');
+              logger.error({ err }, "Error closing database");
               process.exit(1);
             });
         });
@@ -114,20 +114,20 @@ async function main(): Promise<void> {
         server.closeIdleConnections();
       })
       .catch((err: unknown) => {
-        logger.error({ err }, 'Error stopping payment worker');
+        logger.error({ err }, "Error stopping payment worker");
         process.exit(1);
       });
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   // State is unknown after these; log and let the supervisor restart us.
-  process.on('unhandledRejection', (reason) => {
-    logger.fatal({ err: reason }, 'Unhandled promise rejection');
+  process.on("unhandledRejection", (reason) => {
+    logger.fatal({ err: reason }, "Unhandled promise rejection");
     process.exit(1);
   });
-  process.on('uncaughtException', (err) => {
-    logger.fatal({ err }, 'Uncaught exception');
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ err }, "Uncaught exception");
     process.exit(1);
   });
 }
